@@ -8,8 +8,15 @@ class Settings(BaseSettings):
     environment: str = "development"
     backend_host: str = "0.0.0.0"
     backend_port: int = 8000
+
+    # Anthropic (optional)
     anthropic_api_key: str = ""
     claude_model: str = "claude-sonnet-4-20250514"
+
+    # Google Gemini (optional)
+    gemini_api_key: str = ""
+    gemini_model: str = "gemini-1.5-flash"
+
     cors_origins: str = "http://localhost:5173,http://localhost:3000"
 
     @property

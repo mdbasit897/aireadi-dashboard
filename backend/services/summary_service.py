@@ -1,16 +1,27 @@
-"""
-AI summary service — generates a concise, clinician-friendly summary
-of a participant's available data using the Claude API.
 
-If ANTHROPIC_API_KEY is not set, returns a pre-generated template summary.
+"""
+AI summary service — generates a concise clinical summary using:
+  1. Google Gemini API  (if GEMINI_API_KEY is set)
+  2. Anthropic Claude   (if ANTHROPIC_API_KEY is set, fallback)
+  3. Rule-based         (if neither key is configured)
 """
 from config import get_settings
+
+SYSTEM_PROMPT = (
+    "You are a concise clinical AI assistant helping hospital doctors "
+    "review research participant data from the AI-READI Type 2 Diabetes study. "
+    "Given participant metadata and physiological measurements, write a brief "
+    "(3-5 sentence) clinical summary suitable for a doctor's quick review. "
+    "Focus on glycaemic control quality, any concerning patterns, and lifestyle indicators. "
+    "Be factual, neutral, and use standard clinical terminology. "
+    "Do not make diagnoses or treatment recommendations — only summarise what the data shows."
+)
 
 
 def _build_prompt(detail: dict, cgm: dict | None, wearable: dict | None) -> str:
     group_label = detail.get("study_group_label", detail.get("study_group", "Unknown"))
-    site = detail.get("clinical_site_label", detail.get("clinical_site", ""))
-    age = detail.get("age", "N/A")
+    site  = detail.get("clinical_site_label", detail.get("clinical_site", ""))
+    age   = detail.get("age", "N/A")
 
     lines = [
         f"Patient ID: {detail['person_id']}",
@@ -24,7 +35,7 @@ def _build_prompt(detail: dict, cgm: dict | None, wearable: dict | None) -> str:
     if cgm:
         lines += [
             "CGM data (Dexcom G6):",
-            f"  - Time in Range (70–180 mg/dL): {cgm['tir_pct']}%",
+            f"  - Time in Range (70-180 mg/dL): {cgm['tir_pct']}%",
             f"  - Time below 70 mg/dL (hypoglycaemia): {cgm['tir_low_pct']}%",
             f"  - Time above 180 mg/dL (hyperglycaemia): {cgm['tir_high_pct']}%",
             f"  - Time above 250 mg/dL (very high): {cgm['tir_very_high_pct']}%",
@@ -50,68 +61,48 @@ def _build_prompt(detail: dict, cgm: dict | None, wearable: dict | None) -> str:
     return "\n".join(lines)
 
 
-SYSTEM_PROMPT = (
-    "You are a concise clinical AI assistant helping hospital doctors "
-    "review research participant data from the AI-READI Type 2 Diabetes study. "
-    "Given participant metadata and physiological measurements, write a brief "
-    "(3–5 sentence) clinical summary suitable for a doctor's quick review. "
-    "Focus on glycaemic control quality, any concerning patterns, and lifestyle indicators. "
-    "Be factual, neutral, and use standard clinical terminology. "
-    "Do not make diagnoses or recommendations — only summarise what the data shows."
-)
+def _gemini_summary(prompt: str, settings) -> str:
+    import google.generativeai as genai
+    genai.configure(api_key=settings.gemini_api_key)
+    model = genai.GenerativeModel(
+        model_name=settings.gemini_model,
+        system_instruction=SYSTEM_PROMPT,
+    )
+    response = model.generate_content(prompt)
+    return response.text.strip()
 
 
-def get_clinical_summary(
-    detail: dict,
-    cgm: dict | None,
-    wearable: dict | None,
-) -> dict:
-    settings = get_settings()
-    person_id = detail["person_id"]
-
-    if not settings.anthropic_api_key:
-        # Fallback: rule-based summary
-        summary = _rule_based_summary(detail, cgm, wearable)
-        return {"person_id": person_id, "summary": summary, "generated": False}
-
-    try:
-        import anthropic
-        client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
-        prompt = _build_prompt(detail, cgm, wearable)
-        response = client.messages.create(
-            model=settings.claude_model,
-            max_tokens=300,
-            system=SYSTEM_PROMPT,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        summary = response.content[0].text.strip()
-        return {"person_id": person_id, "summary": summary, "generated": True}
-    except Exception as e:
-        summary = _rule_based_summary(detail, cgm, wearable)
-        return {"person_id": person_id, "summary": summary, "generated": False}
+def _claude_summary(prompt: str, settings) -> str:
+    import anthropic
+    client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
+    response = client.messages.create(
+        model=settings.claude_model,
+        max_tokens=300,
+        system=SYSTEM_PROMPT,
+        messages=[{"role": "user", "content": prompt}],
+    )
+    return response.content[0].text.strip()
 
 
 def _rule_based_summary(detail: dict, cgm: dict | None, wearable: dict | None) -> str:
     group = detail.get("study_group_label", detail.get("study_group", ""))
-    age = detail.get("age", "N/A")
+    age   = detail.get("age", "N/A")
     parts = [f"Participant is {age} years old, enrolled as: {group}."]
 
     if cgm:
-        tir = cgm["tir_pct"]
-        hypo = cgm["tir_low_pct"]
-        hyper = cgm["tir_high_pct"]
+        tir    = cgm["tir_pct"]
+        hypo   = cgm["tir_low_pct"]
+        hyper  = cgm["tir_high_pct"]
         mean_g = cgm["mean_glucose"]
-
         if tir >= 70:
             ctrl = "good glycaemic control"
         elif tir >= 50:
             ctrl = "moderate glycaemic control"
         else:
             ctrl = "poor glycaemic control"
-
         parts.append(
             f"CGM data ({cgm['days_covered']} days) shows {ctrl} "
-            f"with {tir}% TIR, mean glucose {mean_g} mg/dL."
+            f"with {tir}% TIR and mean glucose {mean_g} mg/dL."
         )
         if hypo > 4:
             parts.append(f"Notable hypoglycaemia burden: {hypo}% of readings below 70 mg/dL.")
@@ -130,3 +121,33 @@ def _rule_based_summary(detail: dict, cgm: dict | None, wearable: dict | None) -
             parts.append("Wearable data: " + ", ".join(w_parts) + ".")
 
     return " ".join(parts)
+
+
+def get_clinical_summary(
+    detail: dict,
+    cgm: dict | None,
+    wearable: dict | None,
+) -> dict:
+    settings  = get_settings()
+    person_id = detail["person_id"]
+    prompt    = _build_prompt(detail, cgm, wearable)
+
+    # 1. Try Gemini first
+    if settings.gemini_api_key:
+        try:
+            summary = _gemini_summary(prompt, settings)
+            return {"person_id": person_id, "summary": summary, "generated": True, "model": "gemini"}
+        except Exception as e:
+            print(f"[summary] Gemini error for {person_id}: {e}")
+
+    # 2. Try Claude as fallback
+    if settings.anthropic_api_key:
+        try:
+            summary = _claude_summary(prompt, settings)
+            return {"person_id": person_id, "summary": summary, "generated": True, "model": "claude"}
+        except Exception as e:
+            print(f"[summary] Claude error for {person_id}: {e}")
+
+    # 3. Rule-based fallback
+    summary = _rule_based_summary(detail, cgm, wearable)
+    return {"person_id": person_id, "summary": summary, "generated": False, "model": "rule-based"}
