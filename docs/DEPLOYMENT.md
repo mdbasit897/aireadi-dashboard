@@ -23,7 +23,7 @@ sudo apt update && sudo apt install -y python3-pip nodejs npm
 
 ```bash
 cd ~
-git clone https://github.com/your-username/aireadi-dashboard.git
+git clone https://github.com/mdbasit897/aireadi-dashboard.git
 cd aireadi-dashboard
 ```
 
@@ -32,8 +32,7 @@ cd aireadi-dashboard
 ```bash
 cp .env.example .env
 nano .env
-# Set DATASET_ROOT=/home/azureuser/Datasets/f9e65119-3f27-4525-a140-b4413222991d/dataset
-# Optionally set ANTHROPIC_API_KEY for live AI summaries
+# Set DATASET_ROOT=//path/to/your/f9e65119-3f27-4525-a140-b4413222991d/dataset
 ```
 
 ### 4. Verify the dataset
@@ -60,7 +59,7 @@ Leave this terminal open (or use `tmux` / `screen`):
 # In a new terminal:
 tmux new -s backend
 cd ~/aireadi-dashboard/backend
-uvicorn main:app --host 0.0.0.0 --port 8000
+uvicorn main:app --host 0.0.0.0 --port 8000 --reload --env-file ../.env
 # Ctrl+B then D to detach
 ```
 
@@ -84,7 +83,7 @@ cd dist && python3 -m http.server 5173
 ### 7. Open in browser
 
 - On the VM itself:  `http://localhost:5173`
-- From your laptop:  `http://<VM-PUBLIC-IP>:5173`
+- From your PC:  `http://<VM-PUBLIC-IP>:5173`
 
 Make sure Azure Network Security Group allows **inbound TCP on ports 5173 and 8000**.
 
@@ -132,20 +131,29 @@ cd backend && uvicorn main:app --host 0.0.0.0 --port 8000 --reload
 cd frontend && npm run dev -- --host 0.0.0.0
 ```
 
----
+[//]: # (---)
 
-## Enable AI Summaries (Claude API)
+[//]: # ()
+[//]: # (## Enable AI Summaries &#40;Claude API&#41;)
 
-1. Get your Anthropic API key from https://console.anthropic.com
-2. Add to `.env`:
-   ```
-   ANTHROPIC_API_KEY=sk-ant-...
-   ```
-3. Restart the backend.
+[//]: # ()
+[//]: # (1. Get your Anthropic API key from https://console.anthropic.com)
 
-The "Generate summary" button on the Patient page will now call Claude to produce AI-powered clinical summaries.
+[//]: # (2. Add to `.env`:)
 
----
+[//]: # (   ```)
+
+[//]: # (   ANTHROPIC_API_KEY=sk-ant-...)
+
+[//]: # (   ```)
+
+[//]: # (3. Restart the backend.)
+
+[//]: # ()
+[//]: # (The "Generate summary" button on the Patient page will now call Claude to produce AI-powered clinical summaries.)
+
+[//]: # ()
+[//]: # (---)
 
 ## Troubleshooting
 
