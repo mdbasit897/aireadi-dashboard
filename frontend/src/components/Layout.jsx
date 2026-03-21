@@ -1,10 +1,11 @@
 import { Outlet, NavLink, useLocation } from 'react-router-dom'
-import { LayoutDashboard, Users, Activity, Database } from 'lucide-react'
+import { LayoutDashboard, Users, Activity, Database, FlaskConical } from 'lucide-react'
 import clsx from 'clsx'
 
 const navItems = [
   { to: '/overview', icon: LayoutDashboard, label: 'Overview' },
   { to: '/explorer', icon: Users,           label: 'Patients' },
+  { to: '/eda',      icon: FlaskConical,    label: 'EDA Tools' },
 ]
 
 function NavItem({ to, icon: Icon, label }) {

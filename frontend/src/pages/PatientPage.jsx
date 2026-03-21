@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { ArrowLeft, Sparkles, Activity, Heart, BarChart3, Loader2 } from 'lucide-react'
+import { ArrowLeft, Sparkles, Activity, Heart, BarChart3, Loader2, FlaskConical } from 'lucide-react'
 
 import { useApi } from '../hooks/useApi'
 import { api } from '../utils/api'
@@ -15,13 +15,15 @@ import WearableCard from '../components/WearableCard'
 import { SkeletonBlock, SkeletonChartCard } from '../components/Skeleton'
 import ErrorState from '../components/ErrorState'
 import MetricCard from '../components/MetricCard'
+import { ParticipantLabsPanel } from '../components/LabsPanel'
 
 // ── Tab definitions ───────────────────────────────────────────────────────────
 
 const TABS = [
-  { id: 'cgm',     label: 'CGM Glucose', icon: BarChart3 },
-  { id: 'ecg',     label: 'ECG',         icon: Activity  },
-  { id: 'wearable',label: 'Wearable',    icon: Heart     },
+  { id: 'cgm',     label: 'CGM Glucose', icon: BarChart3    },
+  { id: 'ecg',     label: 'ECG',         icon: Activity     },
+  { id: 'wearable',label: 'Wearable',    icon: Heart        },
+  { id: 'labs',    label: 'Lab Values',  icon: FlaskConical },
 ]
 
 // ── AI Summary panel ──────────────────────────────────────────────────────────
@@ -106,27 +108,18 @@ function CGMTab({ personId, hasCGM }) {
 
   return (
     <div className="flex flex-col gap-5">
-      {/* TIR metric cards */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-        <MetricCard label="Time in range"      value={`${data.tir_pct}%`}       sub="70–180 mg/dL" accent="#1D9E75" />
-        <MetricCard label="Time below 70"      value={`${data.tir_low_pct}%`}   sub="Hypoglycaemia" accent={data.tir_low_pct > 4 ? '#E24B4A' : undefined} />
-        <MetricCard label="Mean glucose"       value={`${data.mean_glucose}`}   sub="mg/dL" />
-        <MetricCard label="Monitoring period"  value={`${data.days_covered}`}   sub={`days · ${data.readings_count.toLocaleString()} readings`} />
+        <MetricCard label="Time in range"     value={`${data.tir_pct}%`}      sub="70–180 mg/dL" accent="#1D9E75" />
+        <MetricCard label="Time below 70"     value={`${data.tir_low_pct}%`}  sub="Hypoglycaemia" accent={data.tir_low_pct > 4 ? '#E24B4A' : undefined} />
+        <MetricCard label="Mean glucose"      value={`${data.mean_glucose}`}  sub="mg/dL" />
+        <MetricCard label="Monitoring period" value={`${data.days_covered}`}  sub={`days · ${data.readings_count.toLocaleString()} readings`} />
       </div>
-
-      {/* TIR stacked bar */}
       <div className="card p-5">
-        <h3 className="text-sm font-medium mb-4" style={{ color: 'var(--c-muted)' }}>
-          Time-in-Range breakdown
-        </h3>
+        <h3 className="text-sm font-medium mb-4" style={{ color: 'var(--c-muted)' }}>Time-in-Range breakdown</h3>
         <TIRBar cgm={data} />
       </div>
-
-      {/* CGM trace chart */}
       <div className="card p-5">
-        <h3 className="text-sm font-medium mb-4" style={{ color: 'var(--c-muted)' }}>
-          Glucose trace (Dexcom G6)
-        </h3>
+        <h3 className="text-sm font-medium mb-4" style={{ color: 'var(--c-muted)' }}>Glucose trace (Dexcom G6)</h3>
         <CGMChart series={data.series} />
       </div>
     </div>
@@ -193,6 +186,28 @@ function WearableTab({ personId, hasWearable }) {
   )
 }
 
+// ── Labs Tab ──────────────────────────────────────────────────────────────────
+
+function LabsTab({ personId }) {
+  const { data, loading, error } = useApi(
+    () => api.getParticipantLabs(personId),
+    [personId]
+  )
+
+  if (loading) return <SkeletonChartCard height="h-48" />
+  if (error)   return <ErrorState message={error} />
+
+  return (
+    <div>
+      <p className="text-xs mb-4" style={{ color: 'var(--c-muted)' }}>
+        Lab values from OMOP <code>measurement.csv</code> — concept IDs mapped to LOINC.
+        Flagged values (↑↓) fall outside standard clinical reference ranges.
+      </p>
+      <ParticipantLabsPanel data={data} />
+    </div>
+  )
+}
+
 // ── Main Patient Page ─────────────────────────────────────────────────────────
 
 export default function PatientPage() {
@@ -236,22 +251,16 @@ export default function PatientPage() {
         {/* ── Participant info card ───────────────────────────────────── */}
         <div className="card p-5 fade-up">
           <div className="flex flex-wrap items-start gap-6">
-            {/* Avatar */}
             <div
               className="w-14 h-14 rounded-xl flex items-center justify-center flex-shrink-0 text-lg font-bold"
               style={{ background: 'var(--c-surface2)', color: 'var(--c-accent2)', fontFamily: 'Syne, sans-serif' }}
             >
               {patient.person_id}
             </div>
-
-            {/* Details */}
             <div className="flex-1 min-w-0">
               <div className="flex flex-wrap items-center gap-3 mb-2">
                 <GroupBadge group={patient.study_group} />
-                <span
-                  className="badge"
-                  style={{ background: 'rgba(255,255,255,0.06)', color: 'var(--c-muted)' }}
-                >
+                <span className="badge" style={{ background: 'rgba(255,255,255,0.06)', color: 'var(--c-muted)' }}>
                   {patient.clinical_site} — {SITES[patient.clinical_site]?.label}
                 </span>
                 <span
@@ -293,9 +302,10 @@ export default function PatientPage() {
             ))}
           </div>
 
-          {activeTab === 'cgm'      && <CGMTab      personId={id} hasCGM={mods.wearable_blood_glucose}      />}
-          {activeTab === 'ecg'      && <ECGTab      personId={id} hasECG={mods.cardiac_ecg}                 />}
-          {activeTab === 'wearable' && <WearableTab personId={id} hasWearable={mods.wearable_activity_monitor} />}
+          {activeTab === 'cgm'      && <CGMTab      personId={id} hasCGM={mods.wearable_blood_glucose}         />}
+          {activeTab === 'ecg'      && <ECGTab      personId={id} hasECG={mods.cardiac_ecg}                    />}
+          {activeTab === 'wearable' && <WearableTab personId={id} hasWearable={mods.wearable_activity_monitor}  />}
+          {activeTab === 'labs'     && <LabsTab     personId={id}                                               />}
         </div>
 
       </div>
