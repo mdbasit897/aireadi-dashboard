@@ -415,12 +415,14 @@ def get_comissingness_matrix(study_group: str | None = None) -> dict[str, Any]:
         })
 
     # ── ECG + CGM + Clinical triple overlap by study group ────────────────────
+    # Always computed on the FULL unfiltered df so all 4 groups are always shown.
+    full_df = load_participants()
     triple_overlap = []
     triple_cols = ["cardiac_ecg", "wearable_blood_glucose", "clinical_data"]
-    triple_present = [c for c in triple_cols if c in df.columns]
+    triple_present = [c for c in triple_cols if c in full_df.columns]
     if len(triple_present) == 3:
         for sg, sg_label in STUDY_GROUP_SHORT.items():
-            sg_df = df[df["study_group"] == sg]
+            sg_df = full_df[full_df["study_group"] == sg]
             n_triple = int(sg_df[triple_present].all(axis=1).sum())
             triple_overlap.append({
                 "study_group":       sg,
