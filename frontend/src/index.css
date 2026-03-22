@@ -4,21 +4,21 @@
 
 @layer base {
   :root {
-    --c-bg:       #0b0f1a;
-    --c-surface:  #111827;
-    --c-surface2: #1a2236;
-    --c-border:   rgba(255,255,255,0.07);
-    --c-border2:  rgba(255,255,255,0.12);
-    --c-text:     #e8eaf0;
-    --c-muted:    #8b92a8;
-    --c-accent:   #2f7bff;
-    --c-accent2:  #57a0ff;
+    --c-bg:       #F7F8FA;
+    --c-surface:  #FFFFFF;
+    --c-surface2: #F0F2F5;
+    --c-border:   rgba(0,0,0,0.07);
+    --c-border2:  rgba(0,0,0,0.12);
+    --c-text:     #111318;
+    --c-muted:    #6B7280;
+    --c-accent:   #2563EB;
+    --c-accent2:  #1D4ED8;
 
-    /* Glucose zone colours */
-    --c-tir:      #1D9E75;
-    --c-low:      #E24B4A;
-    --c-high:     #BA7517;
-    --c-vhigh:    #D85A30;
+    /* Glucose zone colours — keep clinical colours as-is */
+    --c-tir:      #059669;
+    --c-low:      #DC2626;
+    --c-high:     #D97706;
+    --c-vhigh:    #EA580C;
   }
 
   * { box-sizing: border-box; }
@@ -36,16 +36,16 @@
     -webkit-font-smoothing: antialiased;
   }
 
-  ::-webkit-scrollbar       { width: 6px; height: 6px; }
+  ::-webkit-scrollbar       { width: 5px; height: 5px; }
   ::-webkit-scrollbar-track { background: transparent; }
   ::-webkit-scrollbar-thumb { background: var(--c-border2); border-radius: 3px; }
 }
 
 @layer components {
   .card {
-    @apply rounded-xl border;
-    background: var(--c-surface);
+    @apply rounded-xl border bg-white;
     border-color: var(--c-border);
+    box-shadow: 0 1px 3px rgba(0,0,0,0.06);
   }
 
   .card2 {
@@ -65,6 +65,7 @@
     @apply inline-flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm transition-all;
     color: var(--c-muted);
     border: 1px solid var(--c-border);
+    background: var(--c-surface);
   }
   .btn-ghost:hover {
     color: var(--c-text);
@@ -72,9 +73,9 @@
     background: var(--c-surface2);
   }
   .btn-ghost.active {
-    color: var(--c-accent2);
+    color: var(--c-accent);
     border-color: var(--c-accent);
-    background: rgba(47,123,255,0.08);
+    background: rgba(37,99,235,0.06);
   }
 
   .badge {
@@ -104,14 +105,14 @@
 
   .input-base {
     @apply w-full rounded-lg px-3 py-2 text-sm outline-none transition-all;
-    background: var(--c-surface2);
+    background: var(--c-surface);
     border: 1px solid var(--c-border);
     color: var(--c-text);
   }
   .input-base::placeholder { color: var(--c-muted); }
-  .input-base:focus { border-color: var(--c-accent); }
+  .input-base:focus { border-color: var(--c-accent); box-shadow: 0 0 0 3px rgba(37,99,235,0.08); }
 
-  select.input-base option { background: var(--c-surface2); }
+  select.input-base option { background: #fff; color: var(--c-text); }
 
   .table-row {
     @apply transition-colors cursor-pointer;
@@ -119,23 +120,20 @@
   }
   .table-row:hover { background: var(--c-surface2); }
 
-  /* Skeleton shimmer */
   .skeleton {
     @apply rounded animate-pulse;
     background: var(--c-surface2);
   }
 }
 
-/* Scrollable chart containers */
 .chart-scroll { overflow-x: auto; overflow-y: hidden; }
 
-/* Fade-in animation */
 @keyframes fadeUp {
-  from { opacity: 0; transform: translateY(12px); }
+  from { opacity: 0; transform: translateY(8px); }
   to   { opacity: 1; transform: translateY(0); }
 }
-.fade-up { animation: fadeUp 0.35s ease both; }
-.fade-up-d1 { animation: fadeUp 0.35s ease 0.05s both; }
-.fade-up-d2 { animation: fadeUp 0.35s ease 0.10s both; }
-.fade-up-d3 { animation: fadeUp 0.35s ease 0.15s both; }
-.fade-up-d4 { animation: fadeUp 0.35s ease 0.20s both; }
+.fade-up    { animation: fadeUp 0.25s ease both; }
+.fade-up-d1 { animation: fadeUp 0.25s ease 0.04s both; }
+.fade-up-d2 { animation: fadeUp 0.25s ease 0.08s both; }
+.fade-up-d3 { animation: fadeUp 0.25s ease 0.12s both; }
+.fade-up-d4 { animation: fadeUp 0.25s ease 0.16s both; }
