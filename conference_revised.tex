@@ -1,0 +1,257 @@
+\documentclass[conference]{IEEEtran}
+\IEEEoverridecommandlockouts
+% The preceding line is only needed to identify funding in the first footnote. If that is unneeded, please comment it out.
+\usepackage{cite}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{algorithmic}
+\usepackage{graphicx}
+\usepackage{multirow} 
+\usepackage{textcomp}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage{url}
+\def\BibTeX{{\rm B\kern-.05em{\sc i\kern-.025em b}\kern-.08em
+    T\kern-.1667em\lower.7ex\hbox{E}\kern-.125emX}}
+\begin{document}
+
+% \title{Conference Paper Title*\\
+% {\footnotesize \textsuperscript{*}Note: Sub-titles are not captured in Xplore and
+% should not be used}
+% \thanks{Identify applicable funding agency here. If none, delete this.}
+% }
+
+\title{OpenT2D Explorer: An Open-Source Clinical Analytics Dashboard for the AI-READI Dataset \\
+{%\footnotesize \textsuperscript{*}Note: Sub-titles are not captured for https://ieeexplore.ieee.org  and
+%should not be used
+}
+%\thanks{Identify applicable funding agency here. If none, delete this.}
+}
+% \author{\IEEEauthorblockN{1\textsuperscript{st} Md Basit Azam\IEEEauthorrefmark{1}}
+% \IEEEauthorblockA{\textit{Department of Computer Science \& Engineering} \\
+% \textit{Tezpur University}\\
+% Napaam - 784 028, Tezpur, Assam, INDIA.\\
+% mdbasit@tezu.ernet.in}
+% \and
+% \IEEEauthorblockN{2\textsuperscript{nd} Sarangthem Ibotombi Singh}
+% \IEEEauthorblockA{\textit{Department of Computer Science \& Engineering} \\
+% \textit{Tezpur University}\\
+% Napaam - 784 028, Tezpur, Assam, INDIA. \\
+% sis@tezu.ernet.in}
+% }
+
+\author{\IEEEauthorblockN{Md Basit Azam$^{*}$,~\IEEEmembership{Graduate Student Member,~IEEE} and  Sarangthem Ibotombi Singh,~\IEEEmembership{Member,~IEEE} }
+\IEEEauthorblockA{\\ Department of Computer Science \& Engineering, Tezpur University, Napaam - 784 028, Tezpur, Assam, INDIA.\\  \texttt{\{mdbasit, sis\}@tezu.ernet.in} \\
+%\textit{name of organization (of Aff.)}\\
+%City, Country \\
+%email address or ORCID 
+}
+\thanks{$^*$ Corresponding Author: Azam, M.B  }
+%
+%\and
+%\IEEEauthorblockN{2\textsuperscript{nd} Given Name Surname}
+%\IEEEauthorblockA{\textit{dept. name of organization (of Aff.)} \\
+%\textit{name of organization (of Aff.)}\\
+%City, Country \\
+%email address or ORCID}
+}
+
+\maketitle
+
+\begin{abstract}
+AI-READI Consortium Dataset v3.0.0 consists of 2,280 subjects featuring nine co-registered data modalities for type 2 diabetes (T2D) investigations, with 3.82 TB of heterogeneous data in different formats, such as waveform-database (WFDB) electrocardiogram (ECG) signals, Open mHealth JavaScript object notation (JSON) format for continuous glucose monitoring (CGM), and 
+observational medical outcomes partnership (OMOP) common data model (CDM) clinical tables. Data integration for further predictive modeling is quite challenging due to the diversity and heterogeneity of the dataset. To overcome these issues, we present AI-READI Explorer, an open-source interactive dashboard built on top of the FastAPI framework and React front end that allows for using three specifically developed Exploratory Data Analysis (EDA) tools for AI-READI v3.0.0: (1) Temporal Overlap Visualizer (TOV) for anchoring CGM and ECG data time windows to clinical visits' date; (2) Multimodal Co-missingness Matrix calculating the pairwise modality file co-presence for particular study groups; and (3) Signal Quality module providing information on the percentage of CGM sensors dropout events and automatic ECG interpretation flags with guidance on proper cohort filtering. A specific workflow, namely from the process of cohort selection to the calculation of modalities intersection rate up to signal verification per participant, reveals that out of 2,280 people, 2,220 (97.4\%) have ECG, CGM, and clinical data files; monitoring with CGM starts on the same day as the clinical visit in the chosen representative example; and HbA1c shows a typical monotonic gradient (Healthy: 5.5\%, Pre-DM: 5.8\%, Oral Med.: 6.3\%, Insulin: 7.0\%). 
+\end{abstract}
+
+\begin{IEEEkeywords}
+Clinical dashboard, Continuous glucose monitoring (CGM), Electrocardiogram (ECG), Multimodal diabetes data
+\end{IEEEkeywords}
+
+\section{Introduction}
+The AI-READI Project developed a groundbreaking, multimodal Type 2 Diabetes dataset and cohort of participants for T2D research \cite{ai-readi_consortium_ai-readi_2024}. The v3.0.0 dataset \cite{ai-readi_consortium_flagship_2025} contains 2,280 participants collected from three clinical sites, namely the University of Washington (UW), University of California San Diego (UCSD), and University of Alabama at Birmingham (UAB), consisting of nine co-registered modalities across the cardiac, retinal, wearable, and clinical categories.
+
+While the dataset is FAIR-packaged, its implementation on deep learning requires the parallel parsing of WFDB \cite{moody_wfdb_nodate} binary ECG records, Open mHealth JSON CGM files, and OMOP CDM tables \cite{hripcsak_george_observational_2015, noauthor_omop_nodate}. Before training the models, researchers are expected to answer the following three questions: (1) whether the target modalities exist for a sufficiently large number of participants; (2) whether the high-frequency streams are captured in the same period relative to the clinic visit; and (3) whether the raw data are of sufficient quality that can be processed without any further preprocessing.
+
+No existing tool can satisfy the above requirements in a single application for the AI-READI dataset. We present the AI-READI Explorer, an open-source dashboard that answers these three questions by implementing three EDA tools. Instead of reporting the dataset's scientific findings, we focus on the workflow researchers will follow using the dashboard to convert the raw dataset into a quality-verified, well-scoped participant cohort.
+
+\section{SYSTEM DESIGN}
+
+\subsection{Architecture}
+
+\begin{figure*}
+    \centering
+    \includegraphics[width=\linewidth]{aireadi_architecture.pdf}
+    \caption{System architecture: FastAPI backend with five service modules, REST API, React frontend with three EDA tool components. Dataset directory mounted read-only.}
+    \label{fig:aireadi_architecture}
+\end{figure*}
+
+The AI-READI Explorer follows a client-server architecture as shown in Fig~\ref{fig:aireadi_architecture}. A Python FastAPI \cite{noauthor_fastapi_nodate} backend serves a React 18 frontend via a REST API. All data access is read-only and fully on-premises; no participant data leaves the researcher’s environment, which satisfies the AI-READI data use agreement requirements. Docker Compose deployment is provided for cloud VM environments \texttt{(tested on Google Cloud VM: e2-highmem-4, 4\,vCPU, 32\,GiB RAM)}. The backend is organized into three router modules \texttt{(/api/cohort, /api/patients, /api/eda)} backed by seven format-specific service modules. A startup lifecycle hook pre-loads the 2,280-row participants.tsv index into an LRU cache, keeping cohort-level API responses under 50\,ms regardless of query complexity. The computationally heaviest endpoint, \texttt{/api/eda/signal-quality} (which scans up to 200 CGM and 150 ECG files), completes in approximately 18.2\,s on a cold start and 9.0\,s on a warm cache, reflecting sequential filesystem reads across 200 CGM and 150 ECG participant directories. These latencies are acceptable for an on-demand EDA endpoint; the \texttt{/api/cohort/summary} endpoint, which serves the overview dashboard, responds in less than 50\,ms from the warm cache owing to LRU pre-loading at startup. The three EDA tools introduced in Section~\ref{sec:eda} are served exclusively through the \texttt{/api/eda} router.
+
+\subsection{Key Engineering Decisions}
+ECG timestamp recovery. AI-READI WFDB records do not populate the standard $base\_date/base\_time$ header fields. Recording dates are instead embedded as free-text comment fields (e.g., \texttt{validation\_date: 20241014}). Our \texttt{eda\_service.py} implements a structured comment parser extracting this timestamp alongside firmware version, filter settings (HP: 0.15 Hz, LP: 100 Hz, Notch: 60 Hz), HR/PR/QRS/QT/QTc intervals, and Philips machine interpretation flags. This non-obvious extraction step is what enables temporal alignment of ECG recordings with CGM windows. Running the parser across all ECG participants (N\,=\,2,251 with confirmed \texttt{.hea} files) yielded a successful \texttt{validation\_date} extraction rate of 100.0\%; with zero failures across all failure modes (missing field, malformed date, header read error), confirming that the Philips PageWriter TC30 embeds the \texttt{validation\_date} comment consistently across all three clinical sites. When \texttt{recording\_date} cannot be extracted, it is set to \texttt{None} and the Temporal Overlap timeline displays ``---'' in that field rather than raising an error, ensuring graceful degradation for partially parsed cohorts. The \texttt{has\_abnormal\_flag} field is set when any of the abnormal keywords (e.g., ``ST elevation'', ``atrial fibrillation'', ``bradycardia'') appear in \textit{any} comment field, including machine measurement annotations such as
+\texttt{comment\_2\_key}. This intentionally captures subthreshold findings (e.g., minimal anterior ST elevation noted in \texttt{comment\_2\_key} alongside an \texttt{interpretation\_comment\_2} of ``OTHERWISE NORMAL ECG''), providing researchers with the most sensitive possible flag for downstream exclusion decisions.
+OMOP-to-LOINC mapping and unit validation. The \texttt{measurement.csv} table \cite{noauthor_omop_nodate} contains 242,279 rows mapped to OMOP concept IDs. The dashboard embeds a static concept dictionary providing LOINC codes and canonical clinical units for all 23 measured concepts, including HbA1c (OMOP 3004410 $\to$ LOINC 4548-4, unit: \%) and fasting glucose (OMOP 3004501 $\to$ LOINC 2345-7, unit: mg/dL), enabling researchers to cross-reference findings with external EHR datasets such as MIMIC or eICU. Unit homogeneity was verified via the \texttt{unit\_source\_value} column in \texttt{measurement.csv}: all HbA1c rows in the AI-READI v3.0.0 dataset use NGSP percent units with no mmol/mol entries present, HbA1c and the lipid panel (total cholesterol, triglycerides, HDL, LDL),  creatinine, BUN, CRP, and MoCA score were confirmed unit-homogeneous.  A subset of concepts including anthropometric measures (BMI, height, weight,  waist circumference), vital signs (systolic BP, diastolic BP, heart rate), and hematology (hematocrit, hemoglobin, platelets) contain rows with a blank \texttt{unit\_source\_value}; Insulin and C-peptide contain rows with unit \texttt{ng/L} (non-canonical); and Calcium contains rows with unit \texttt{mEq/L} (non-canonical). These rows are handled by the physiologically plausible range filter rather than a unit conversion, as their values fall within expected ranges regardless of unit label. The service layer implements a conversion registry for future mixed-unit datasets and applies physiologically plausible range filtering (e.g., HbA1c 3--20\%, BMI 10--80\,kg/m$^2$) to exclude erroneous entries from cohort-level distributions; the count of excluded rows is surfaced in the API response for transparency (one implausible outlier row excluded per concept across HbA1c, BMI, and serum glucose in v3.0.0, representing a $<$0.2\% exclusion rate consistent with isolated data-entry errors rather than systematic unit inconsistency).
+
+\section{EDA TOOLS}
+\label{sec:eda}
+
+\subsection{Temporal Overlap Visualizer (TOV)}
+\label{sec:temporal_overlap_visualizer}
+Temporal alignment is the most critical data-preparation step for non-invasive glucose prediction from ECG signals. The TOV renders a per-participant Gantt-style timeline with three streams anchored to the clinical visit date from \texttt{visit\_occurrence.csv}: (1) the visit timestamp (point event); (2) the CGM monitoring window as a continuous bar from the first to last Open mHealth JSON timestamp; and (3) the ECG recording date recovered from \texttt{.hea} comment fields.
+
+All alignment comparisons in this tool operate at the calendar-date granularity. CGM timestamps are stored in UTC (ISO\,8601 with Z suffix); OMOP \texttt{visit\_start\_date} is a timezone-naive calendar date; and the ECG \texttt{validation\_date} comment is a bare YYYYMMDD string with no timezone annotation. Sub-day alignment cannot be guaranteed without site-specific UTC offset metadata combined with historical daylight saving time logs for each clinical site. Resolving this artifact is acknowledged as a known limitation and is discussed further in Section~\ref{sec:discussions}.
+
+Figure~\ref{fig:temporal_overlap_visualizer_1023} shows the timeline of Participant 1023. The clinical visit occurred on 2023-08-30 at 08:55; CGM monitoring commenced the same \textit{calendar day} at 17:53 UTC and ran for 9.9 days (2,816 readings, 1.4\% dropout). The ECG recording date for this participant was obtained from the \texttt{.hea} \texttt{validation\_date} field is 2024-10-14, indicating a follow-up recording acquired approximately 14 months after the baseline visit, which is consistent with the longitudinal re-measurement protocols in the AI-READI study. This illustrates an important finding: while CGM co-registers with the baseline clinical visit by design, ECG recordings in the dataset are not universally same-day and must be verified per participant
+using the TOV. All alignment comparisons are at calendar-date granularity; sub-day synchronization is not verifiable from the available timestamp metadata.
+
+The interface also surfaces automated ECG interval measurements (HR, QTc) and machine-interpretation flags inline with the timeline, allowing a researcher to identify and exclude participants with clinically significant ECG findings (e.g., QTc $>$ 500\,ms, arrhythmia flags) before building a training set.
+
+\begin{figure*}[htbp]
+    \centering
+    \includegraphics[width=\linewidth]{Figure 2.png}
+    \caption{TOV for Participant 1023. CGM monitoring (9.9 days, 2,816 readings) co-registers with the 2023-08-30 baseline visit. The ECG recording date (2024-10-14) reflects a longitudinal follow-up, illustrating the importance of per-participant temporal verification.}
+    \label{fig:temporal_overlap_visualizer_1023}
+\end{figure*}
+
+\subsection{Multimodal Co-missingness Matrix}
+The Co-missingness Matrix addresses how many participants have all the necessary files for a particular modality pair in the dataset folder. A symmetric 9×9 heatmap, as shown in Fig.~\ref{fig:co_missingness_matrix}, was constructed: cell (i,j) represents the number and percentage of participants with files from both modalities i and j. The diagonal values correspond to the single modalities. Note that the matrix captures whether files exist for a participant based on the participants.tsv (columns for each modality as booleans), and not timestamp-wise. A participant with both ECG and CGM had valid files for the two modalities. The co-registration in time is confirmed on an individual basis with the TOV, as described in Section~\ref{sec:temporal_overlap_visualizer}. The two-stage approach, file-level filtering followed by temporal overlap examination, is the proper way to use this tool.
+
+A filter for specific studies is possible, while a triple-overlap module reveals ECG, CGM, and clinical data, which are vital for supervised glucose estimation. Table~\ref{tab:triple_overlap} provides the results for all the study groups.
+
+\begin{figure}[htbp]
+    \centering
+    \includegraphics[width=\linewidth]{Figure 3.png}
+    \caption{Multimodal Co-missingness Matrix for the full AI-READI cohort (N=2,280). Color intensity encodes co-presence percentage.}
+    \label{fig:co_missingness_matrix}
+\end{figure}
+
+\begin{table}[htbp]
+    \centering
+    \caption{ECG + CGM + Clinical Data Triple Overlap by Study Group}
+    \label{tab:triple_overlap}
+    \begin{tabular}{@{} l c c c @{}}
+        \hline
+        \textbf{Study Group} & \textbf{N (Total)} & \textbf{N (Triple)} & \textbf{Coverage (\%)} \\
+        \hline
+        Healthy                 & 776   & 750   & 96.6 \\
+        Pre-DM / Lifestyle      & 560   & 547   & 97.7 \\
+        Oral / Non-insulin Med. & 686   & 675   & 98.4 \\
+        Insulin Dependent       & 258   & 248   & 96.1 \\
+        \hline
+        \textbf{Total}          & \textbf{2,280} & \textbf{2,220} & \textbf{97.4} \\
+        \hline
+    \end{tabular}
+\end{table}
+
+\subsection{Signal Quality \& Sensor Provenance}
+The Signal Quality module provides two complementary quality views that enable researchers to make principled exclusion decisions before preprocessing pipelines are written.
+CGM quality. For a performance-optimized sample of CGM participants (the first 200 in \texttt{participants.tsv} ordering a deliberate architectural trade-off to guarantee sub-second API response times for the interactive dashboard), the per-participant dropout is computed as:
+\begin{equation}
+    \frac{\text{expected} - \text{actual readings}}{\text{expected}} \times 100\%, 
+\end{equation}
+$$\text{where } \text{expected} = \text{days\_covered} \times 288$$ \\ \text{ (Dexcom G6 5-minute interval \cite{dexcom_guides})}
+Distributions of dropout rate and monitoring duration were rendered as interactive histograms. A researcher can immediately read off, for example, what fraction of participants would survive a “$<$10\% dropout” quality threshold, and adjust their exclusion criterion accordingly without writing any code.
+ECG quality and actionable filtering. The Philips PageWriter TC30 \cite{philips_tc30_manual} embeds automated 12-lead interpretation in each .hea file. The dashboard aggregates these flags across the participant sample and reports the proportion of normal versus flagged interpretations, alongside the HR and QTc distributions. Critically, a researcher can use these aggregate statistics to decide whether to exclude participants with specific flags, for example, removing all ECGs flagged with QTc\,$>$\,470\,ms (prolonged QTc) or atrial fibrillation before training a sinus-rhythm-dependent glucose prediction model. The abnormal flag is set when any machine-generated comment field contains a clinical keyword, including
+subthreshold findings (e.g., ``Minimal ST elevation, anterior leads'') that the Philips automated interpreter has annotated but not escalated to a primary diagnosis. Researchers requiring only primary diagnosis flags should filter on \texttt{interpretation\_comment\_2} directly. The firmware version (A.07.07.07) and filter settings were consistent across all three sites, ruling out site-level hardware calibration drift as a confounding factor, as shown in Fig~\ref{fig:signal_quality_module}. Both quality samples used the first participants in \texttt{participants.tsv} ordering (N\,=\,200 for CGM, N\,=\,150 for ECG); full-cohort quality statistics require an offline batch pipeline and are listed as a development priority.
+
+\begin{figure}[htbp]
+    \centering
+    \includegraphics[width=\linewidth]{Figure 4.png}
+    \caption{Signal Quality module showing CGM dropout and ECG quality distributions with full sensor provenance for the Philips PageWriter TC30.}
+    \label{fig:signal_quality_module}
+\end{figure}
+
+\section{USE CASE: PREPARING A NON-INVASIVE GLUCOSE PREDICTION PIPELINE}
+\label{sec:pipeline}
+To demonstrate the practical utility of the dashboard, we walk through a concrete researcher scenario: building a training cohort for an ECG-to-glucose prediction model using the AI-READI dataset. This scenario directly mirrors the research context in which the dashboard was developed in this study.
+
+\subsection{Step 1: Cohort Scoping}
+The researcher opens the dashboard Overview page and immediately sees that 2,280 participants have been enrolled across four study groups. The modality coverage panel showed that ECG and CGM each had $>$95\% presence. The researcher notes the recommended train/val/test split (stratified by the dataset creators) and decides to restrict the initial experiments to the \textit{train} split.
+
+\subsection{Step 2: Modality Intersection via Co-missingness Matrix}
+By navigating to the EDA Tools page and selecting the co-missingness Matrix, the researcher set the study group filter to insulin-dependent, the highest-severity group and the most clinically relevant for a glucose prediction model. The 9×9 heatmap immediately showed that 248 of the 258 insulin-dependent participants (96.1\%) had concurrent ECG, CGM, and clinical data files. The researcher notes that this exceeds the minimum threshold of 200 training samples and proceeds.
+
+\subsection{Step 3: Temporal Co-registration Verification}
+Before committing to the dataset, the researcher must confirm that the ECG recordings and CGM traces are temporally co-registered rather than recorded weeks apart. Switching to the Temporal Overlap tab and entering Participant 1023 (a representative insulin-dependent participant), the timeline renders: visit date 2023-08-30, CGM window 2023-08-30 to 2023-09-09 (same calendar day as visit, 9.9 days, 1.4\% dropout, 2,816 readings); and ECG recording date 2024-10-14, a follow-up recording acquired approximately
+14 months post-baseline, consistent with the AI-READI longitudinal protocol. This highlights a key usage pattern for the TOV: the CGM is consistently co-registered with the baseline visit date, whereas ECG recordings may be from separate longitudinal time points and must be individually verified before assuming same-visit alignment. (All alignment comparisons are at the calendar-date granularity.) 
+
+\subsection{Step 4: Signal Quality Gating}
+The researcher navigated to the Signal Quality tab to determine how many participants should be excluded on quality grounds. The CGM dropout histogram shows that 99\% of the sampled participants (198/200) had $<$10\% dropout, with a mean dropout rate of 0.4\%, indicating excellent CGM data quality across this cohort. The ECG quality panel reports the Philips four-way verdict  distribution: 34.7\% \textit{Normal ECG}, 26.0\% \textit{otherwise normal ECG} 
+(minor incidental findings adjudicated as overall normal by the machine), 6.0\% \textit{borderline ECG}, and 33.3\% \textit{abnormal ECG} (findings including LVH, fascicular block, prolonged PR interval, and old infarct patterns consistent with expected cardiac comorbidity prevalence in a middle-aged T2D cohort), with a mean HR of 68.3\, bpm and mean QTc of 424.8\,ms. 
+The researcher sets exclusion criteria: CGM dropout $>$ 20\% and an ECG with a strict \textit{Abnormal ECG} verdict and concurrent atrial fibrillation, or QTc $>$ 500\,ms. These thresholds were directly derived from the dashboard, without writing a single line of preprocessing code.
+
+\subsection{Step 5: Ground-Truth Label Validation}
+As a final sanity check, the researcher opened the Lab Distributions tab, which queries OMOP measurement.csv for HbA1c values grouped by the study group. The resulting chart showed a monotonic gradient: healthy (median 5.5\%, IQR 5.3--5.7\%, n=759), Pre-DM (5.8\%, IQR 5.6--6.0\%, n=546), oral Medication (6.3\%, IQR 5.9--6.9\%, n=657), and insulin Dependent (7.0\%, IQR 6.3--7.9\%, n=248) groups. The insulin-dependent median of 7.0\% aligns precisely with the American Diabetes Association (ADA) hemoglobin A1C treatment target, confirming that study group labels are biomarker-validated and suitable for use as supervised learning targets.
+\\
+This five-step workflow, which includes cohort scoping, modality intersection, temporal verification, signal quality gating, and label validation, takes approximately 15 min using the dashboard and requires zero custom code. The equivalent workflow from raw files would require several days of parsing and exploratory analyses.
+
+\section{Discussion}
+\label{sec:discussions}
+To the best of our knowledge, the AI-READI Explorer is the first dedicated dashboard for analyzing the AI-READI dataset. While the closest alternatives, the Jupyter notebook interface provided by the consortium itself and general OMOP tools such as ATLAS, only cover portions of the multimodal access challenge and require significant tailoring on the part of researchers, the primary achievement of the dashboard is not the scientific results discussed in Section~\ref{sec:pipeline} but rather the infrastructure enabling researchers without specialized parsing capabilities to benefit from these findings. The Co-missingness Matrix reflects file presence in \texttt{participants.tsv}, not timestamp-level temporal overlap. Temporal alignment in the TOV is assessed only at \textit{calendar-date granularity}. CGM timestamps are stored in UTC (ISO\,8601 with Z suffix), OMOP \texttt{visit\_start\_date} is a timezone-naïve calendar date, and the ECG \texttt{validation\_date} comment is a bare YYYYMMDD string with no timezone annotation. Fully resolving sub-day alignment would require site-specific UTC offset metadata combined with historical daylight saving time logs for UW (Pacific Time), UCSD (Pacific Time), and UAB (Central Time), information that is not currently available in the AI-READI v3.0.0 release. We consider calendar-date co-registration to be the appropriate and scientifically defensible operational threshold for the temporal alignment claim made in this study.
+
+The Signal Quality module uses the first 200 (CGM) and 150 (ECG) participants in \texttt{participants.tsv} ordering a head-slice chosen to guarantee sub-second interactive response times rather than a randomized or stratified draw. Since ordering of \texttt{participants.tsv} may correlate with the enrollment date or clinical site, the reported dropout and quality rates should be interpreted as approximate indicators. Full-cohort stratified quality statistics require an offline batch pipeline and are listed as a development priority. Table~\ref{tab:study_group} provides a site- and study-group-stratified breakdown of ECG and CGM file presence, populated from the \texttt{site\_group\_breakdown} field in \texttt{/api/eda/temporal-overlap/cohort}. Coverage was uniformly high across all sites and groups (ECG: 97.3--100.0\%; CGM: 95.5--100.0\%; concurrent ECG+CGM: 95.1--99.3\%), with the UCSD Healthy subgroup showing the lowest CGM presence at 95.5\% still well above the threshold required for model training. This enables researchers to identify site-level discrepancies before finalizing the cohort selection. An automated flag for suspected time zone inconsistencies (e.g., participants whose ECG and CGM UTC calendar dates differ by exactly one day) is planned for future release.
+
+\begin{table}[htbp]
+    \centering
+    \caption{SITE $\times$ STUDY-GROUP STRATIFIED ECG AND CGM FILE PRESENCE}
+    \label{tab:study_group}
+    \resizebox{\columnwidth}{!}{%
+    \begin{tabular}{@{} c c c c c c @{}}
+    % \begin{tabular}{cccccc}
+    \hline
+    \textbf{Site} & \textbf{Study Group} & \textbf{N} & \textbf{ECG (\%)} & \textbf{CGM (\%)} & \textbf{Both (\%)} \\
+    \hline
+    \multirow{4}{*}{UW (798)}   & Healthy    & 337 & 97.3 & 99.1 & 96.4 \\
+                                 & Pre-DM     & 211 & 99.1 & 98.6 & 97.6 \\
+                                 & Oral Med.  & 190 & 98.9 & 100.0 & 98.9 \\
+                                 & Insulin    &  60 & 100.0 & 96.7 & 96.7 \\
+    \hline
+    \multirow{4}{*}{UCSD (682)} & Healthy    & 201 & 99.5 & 95.5 & 95.5 \\
+                                 & Pre-DM     & 201 & 98.0 & 98.0 & 96.5 \\
+                                 & Oral Med.  & 219 & 99.1 & 98.6 & 98.2 \\
+                                 & Insulin    &  61 & 98.4 & 96.7 & 95.1 \\
+    \hline
+    \multirow{4}{*}{UAB (800)}  & Healthy    & 238 & 99.2 & 98.7 & 97.9 \\
+                                 & Pre-DM     & 148 & 99.3 & 99.3 & 99.3 \\
+                                 & Oral Med.  & 277 & 98.9 & 99.3 & 98.2 \\
+                                 & Insulin    & 137 & 98.5 & 97.8 & 96.4 \\
+    \hline
+\end{tabular}
+}
+\end{table}
+
+\section{CONCLUSION}
+We present the AI-READI Explorer, an open-source platform for clinical data analytics that aims to reduce the barriers to data readiness in multimodal studies of T2D. It includes three EDA tools that turn modality coexistence, temporal synchronization, and signal integrity into a 15-minute hands-on process that does not involve coding. Cohort-wise analysis showed that 97.4\% of the triple-modality files were present within each group and that clinically meaningful HbA1c classification was observed across the study groups. Future directions for the tool include: (1) calculation of temporal synchronization between multiple modalities at the timestamp level for the whole cohort; (2) computational performance-focused export formats (Apache Parquet and WebDataset) to be used in high-performance computing (HPC) pipelines, which will include future endpoints with outputs that represent the filtered cohorts with CGM/ECG windows ready to be consumed by PyTorch DataLoader and TensorFlow tf.data pipelines with minimal adjustments; and (3) cohort builder capable of splitting datasets according to the recommended train/validation/test split and assessing whether the custom-defined participants have retained their statistical properties. The dashboard is publicly available under the MIT License at: \url{https://github.com/mdbasit897/aireadi-dashboard}.
+
+\section{ACKNOWLEDGMENT}
+The authors thank the AI-READI Consortium (funded by NIH Bridge2AI) and the study participants for their support. The AI-READI dataset is licensed under a customized FAIRhub license, and the study dashboard is an analysis-only portal that does not republish any original data. This work is supported by the Google Cloud Research Credits program, award no. GCP19980904.
+
+% \section*{References}
+\begin{thebibliography}{00}
+
+\bibitem{ai-readi_consortium_ai-readi_2024}
+{AI-READI Consortium} \emph{et al.}, ``{AI}-{READI}: rethinking {AI} data collection, preparation and sharing in diabetes research and beyond,'' \emph{Nature Metabolism}, vol. 6, pp. 2210--2212, Nov. 2024. [Online]. Available: \url{https://doi.org/10.1038/s42255-024-01165-x}
+
+\bibitem{ai-readi_consortium_flagship_2025}
+{AI-READI Consortium}, ``Flagship Dataset of Type 2 Diabetes from the AI-READI Project,'' 2025. [Dataset]. Available: \url{https://fairhub.io/datasets/3/access}. Accessed: Mar 24, 2026.
+
+\bibitem{moody_wfdb_nodate}
+G.~Moody, T.~Pollard, and B.~Moody, ``{WFDB} {Software} {Package},'' \emph{PhysioNet}, Jun. 2022, Version 10.7.0. [Online]. Available: \url{https://doi.org/10.13026/gjvw-1m31}
+
+\bibitem{hripcsak_george_observational_2015}
+G. Hripcsak \emph{et al.}, ``Observational Health Data Sciences and Informatics (OHDSI): Opportunities for Observational Researchers,'' in \emph{Studies in Health Technology and Informatics}, vol. 216, pp. 574--578, 2015.
+
+\bibitem{noauthor_omop_nodate}
+OHDSI, ``OMOP Common Data Model v5.4.'' [Online]. Available: \url{https://ohdsi.github.io/CommonDataModel/cdm54.html}. Accessed: Apr 4, 2026.
+
+\bibitem{noauthor_fastapi_nodate}
+S. Ramírez, ``FastAPI.'' [Online]. Available: \url{https://fastapi.tiangolo.com/}. Accessed: Mar 24, 2026.
+
+\bibitem{dexcom_guides}
+{Dexcom, Inc.}, ``Dexcom Product Guides.'' [Online]. Available: \url{https://www.dexcom.com/guides}. Accessed: Apr 4, 2026.
+
+\bibitem{philips_tc30_manual}
+{Philips Healthcare}, \emph{PageWriter TC30 Cardiograph - User manual}. [Online]. Available: \url{http://www.frankshospitalworkshop.com/equipment/documents/ecg/user_manuals/Philips\%20PageWriter\%20TC30\%20Cardiograph\%20-\%20User\%20manual.pdf}. Accessed: Apr 4, 2026.
+
+\end{thebibliography}
+
+\end{document}
