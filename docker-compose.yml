@@ -10,8 +10,10 @@ services:
     volumes:
       - ${DATASET_ROOT:-/home/azureuser/Datasets/f9e65119-3f27-4525-a140-b4413222991d/dataset}:/dataset:ro
       - ./data:/app/data
+      - ./results:/app/results:ro
     environment:
       - DATASET_ROOT=/dataset
+      - RESULTS_DIR=/app/results
       - ENVIRONMENT=${ENVIRONMENT:-development}
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
       - CLAUDE_MODEL=${CLAUDE_MODEL:-claude-sonnet-4-20250514}

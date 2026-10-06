@@ -2,38 +2,45 @@
 EDA service — three analytical tools for the AI-READI EDA dashboard:
 
 1. Temporal Overlap: per-participant and cohort-level timeline of
-   CGM windows anchored to clinical visit dates, with ECG recording
-   date extracted from WFDB .hea comment fields.
+   CGM windows anchored to clinical visit dates, with the ECG date
+   extracted from WFDB .hea comment fields.
 
 2. Co-missingness Matrix: how many participants in each study group
    have concurrent data across all modality combinations.
 
-3. Signal Quality: CGM dropout rate, ECG quality flags from
-   machine interpretation comments, wearable data density.
+3. Signal Quality: CGM dropout rate and the Philips PageWriter TC30
+   four-way machine verdict (normal / otherwise normal / borderline /
+   abnormal) read from interpretation_comment_2.
 
-Parser coverage note (Q1):
-   _parse_ecg_comments() extracts the recording date from the
-   `validation_date` comment field (format: YYYYMMDD). If this field
-   is absent or malformed, recording_date is returned as None and
-   the frontend displays "—" in the Temporal Overlap timeline without
-   raising an error. Parser success rate should be reported in the
-   manuscript (see get_ecg_parser_coverage_report()).
+ECG date parsing:
+   AI-READI WFDB headers leave base_date/base_time empty. The only date in
+   the header is the `validation_date` comment (YYYYMMDD). Parsing rules:
+     1. split each comment line at the first ':' into key and value;
+     2. take the value of key `validation_date`;
+     3. accept it only if it is exactly 8 digits and a valid calendar date.
+   Failures are classified as missing / malformed / no_hea_file /
+   header_read_error and the date is returned as None (shown as "—").
+   Whether validation_date is the acquisition date is checked by
+   scripts/ecg_date_audit.py, not assumed here.
 
-Timezone note (Q2):
+Timezone note:
    All temporal alignment is performed at calendar-date granularity.
    CGM timestamps are stored in UTC (ISO 8601 with Z suffix);
    visit_occurrence dates are timezone-naive calendar dates; ECG
    validation_date is a bare YYYYMMDD string with no TZ annotation.
-   Sub-day alignment cannot be guaranteed without site-specific UTC
-   offset metadata and historical daylight saving time logs.
+
+Full-cohort results:
+   The offline pipeline in scripts/ writes JSON files to settings.results_dir.
+   When results/quality_full.json exists, /api/eda/signal-quality serves the
+   full-cohort statistics; otherwise it computes a seeded, study-group-
+   stratified random sample live and labels it as such.
 """
 
 import glob
 import json
 import logging
 import os
-import re
-from datetime import datetime, timedelta
+from datetime import datetime
 from functools import lru_cache
 from typing import Any
 
@@ -41,39 +48,42 @@ import pandas as pd
 
 from config import get_settings
 from services.cohort_service import load_participants
+from services.readiness_service import (
+    DEFAULT_TAU_DAYS,
+    classify_philips_verdict,
+    cgm_readings_from_omh,
+    comments_to_dict,
+    make_histogram,
+    parse_yyyymmdd,
+    stratified_sample,
+    summarise_cgm,
+    summarise_quality,
+    to_int_or_none,
+)
 
 logger = logging.getLogger(__name__)
+
+LIVE_SAMPLE_CGM = 200
+LIVE_SAMPLE_ECG = 150
+LIVE_SAMPLE_SEED = 42
 
 # ── ECG comment parser ───────────────────────────────────────────────────────
 
 def _parse_ecg_comments(comments: list[str]) -> dict[str, Any]:
     """
     Extracts structured metadata from WFDB .hea comment strings.
-    Returns validation_date, device firmware, filter settings,
-    interpretation flags, HR/PR/QT intervals.
+    Returns the validation_date, device firmware, filter settings,
+    the Philips machine verdict and HR/PR/QRS/QT/QTc intervals.
 
     If `validation_date` is absent or cannot be parsed, recording_date
-    is set to None. The caller and frontend treat None as a missing value
-    (displayed as "—") rather than raising an error, so partial parse
-    failures degrade gracefully.
+    is set to None and recording_date_failure names the reason.
     """
-    meta: dict[str, Any] = {}
-    for c in comments:
-        if ":" in c:
-            key, _, val = c.partition(":")
-            meta[key.strip()] = val.strip()
-
+    meta = comments_to_dict(comments)
     result: dict[str, Any] = {}
 
-    # Recording date from validation_date field (format: YYYYMMDD)
-    vd = meta.get("validation_date", "")
-    if vd and len(vd) == 8:
-        try:
-            result["recording_date"] = datetime.strptime(vd, "%Y%m%d").date().isoformat()
-        except ValueError:
-            result["recording_date"] = None
-    else:
-        result["recording_date"] = None
+    d, failure = parse_yyyymmdd(meta.get("validation_date"))
+    result["recording_date"]         = d.isoformat() if d else None
+    result["recording_date_failure"] = failure
 
     result["device_model"]    = meta.get("device_model", "Unknown")
     result["firmware"]        = meta.get("machine_detail_description", "")
@@ -87,38 +97,70 @@ def _parse_ecg_comments(comments: list[str]) -> dict[str, Any]:
     result["sinus_rhythm"]   = "Sinus rhythm" in str(meta.get("comment_1_key", ""))
 
     # Interval measurements from header
-    try:    result["hr"]   = int(meta.get("Rate", 0))
-    except: result["hr"]   = None
-    try:    result["pr"]   = int(meta.get("PR", 0))
-    except: result["pr"]   = None
-    try:    result["qrsd"] = int(meta.get("QRSD", 0))
-    except: result["qrsd"] = None
-    try:    result["qt"]   = int(meta.get("QT", 0))
-    except: result["qt"]   = None
-    try:    result["qtc"]  = int(meta.get("QTc", 0))
-    except: result["qtc"]  = None
+    result["hr"]   = to_int_or_none(meta.get("Rate"))
+    result["pr"]   = to_int_or_none(meta.get("PR"))
+    result["qrsd"] = to_int_or_none(meta.get("QRSD"))
+    result["qt"]   = to_int_or_none(meta.get("QT"))
+    result["qtc"]  = to_int_or_none(meta.get("QTc"))
 
-    # Quality flags
-    abnormal_keywords = [
-        "ST elevation", "ST depression", "atrial fibrillation",
-        "left bundle", "right bundle", "ischemia", "infarct",
-        "bradycardia", "tachycardia", "abnormal",
-    ]
-    interp_text = " ".join(str(v) for v in meta.values()).lower()
-    result["has_abnormal_flag"]      = any(kw.lower() in interp_text for kw in abnormal_keywords)
-    result["unconfirmed_diagnosis"]  = "Unconfirmed" in meta.get("interpretation_comment_1", "")
+    # Quality flags — interpretation_comment_2 is the authoritative Philips
+    # machine verdict: "- NORMAL ECG -", "- OTHERWISE NORMAL ECG -",
+    # "- BORDERLINE ECG -" or "- ABNORMAL ECG -". Keyword matching over the
+    # other comment fields is intentionally NOT used: secondary annotations
+    # (e.g. "Minimal ST elevation") appear on OTHERWISE NORMAL records and
+    # would produce false positives.
+    verdict = classify_philips_verdict(meta.get("interpretation_comment_2"))
+    result["ecg_verdict"]           = verdict
+    result["philips_verdict"]       = meta.get("interpretation_comment_2", "").strip()
+    result["has_abnormal_flag"]     = verdict == "abnormal"
+    result["is_otherwise_normal"]   = verdict == "otherwise_normal"
+    result["is_borderline"]         = verdict == "borderline"
+    result["unconfirmed_diagnosis"] = "Unconfirmed" in meta.get("interpretation_comment_1", "")
 
     return result
 
 
-def _find_ecg_record(person_id: str) -> str | None:
+def _find_ecg_records(person_id: str) -> list[str]:
+    """All WFDB record paths (without .hea) for a participant, sorted."""
     settings = get_settings()
-    pattern1 = os.path.join(settings.ecg_dir, person_id, "*.hea")
-    headers  = glob.glob(pattern1)
+    headers = glob.glob(os.path.join(settings.ecg_dir, person_id, "*.hea"))
     if not headers:
-        pattern2 = os.path.join(settings.ecg_dir, f"{person_id}*.hea")
-        headers  = glob.glob(pattern2)
-    return headers[0].replace(".hea", "") if headers else None
+        headers = glob.glob(os.path.join(settings.ecg_dir, f"{person_id}*.hea"))
+    return [h[: -len(".hea")] for h in sorted(headers)]
+
+
+def _find_ecg_record(person_id: str) -> str | None:
+    records = _find_ecg_records(person_id)
+    return records[0] if records else None
+
+
+def read_ecg_header(person_id: str) -> dict[str, Any]:
+    """
+    Reads the first WFDB header for a participant without loading the signal.
+    Returns {"ok": False, "failure": "no_hea_file" | "header_read_error"} on
+    failure, otherwise the raw comments plus header fields.
+    """
+    records = _find_ecg_records(person_id)
+    if not records:
+        return {"ok": False, "failure": "no_hea_file", "n_records": 0}
+    try:
+        import wfdb
+        header = wfdb.rdheader(records[0])
+    except Exception as e:  # noqa: BLE001 — any header problem is a read error
+        logger.debug("ECG header read failed for %s: %s", person_id, e)
+        return {"ok": False, "failure": "header_read_error", "n_records": len(records)}
+    return {
+        "ok":          True,
+        "failure":     None,
+        "record_path": records[0],
+        "n_records":   len(records),
+        "comments":    header.comments or [],
+        "base_date":   header.base_date,
+        "base_time":   header.base_time,
+        "fs":          header.fs,
+        "sig_len":     header.sig_len,
+        "n_sig":       header.n_sig,
+    }
 
 
 def get_ecg_metadata(person_id: str) -> dict[str, Any] | None:
@@ -127,167 +169,192 @@ def get_ecg_metadata(person_id: str) -> dict[str, Any] | None:
     recording_date is None when validation_date is absent from the .hea
     comment block; the frontend renders "—" in that case.
     """
-    record_path = _find_ecg_record(person_id)
-    if not record_path:
+    h = read_ecg_header(person_id)
+    if not h["ok"]:
         return None
-    try:
-        import wfdb
-        header = wfdb.rdheader(record_path)
-        meta   = _parse_ecg_comments(header.comments or [])
-        meta["person_id"]    = person_id
-        meta["fs"]           = header.fs
-        meta["sig_len"]      = header.sig_len
-        meta["duration_sec"] = round(header.sig_len / header.fs, 2) if header.fs else None
-        return meta
-    except Exception as e:
-        logger.debug("ECG metadata read failed for %s: %s", person_id, e)
-        return None
+    meta = _parse_ecg_comments(h["comments"])
+    meta["person_id"]    = person_id
+    meta["fs"]           = h["fs"]
+    meta["sig_len"]      = h["sig_len"]
+    meta["duration_sec"] = round(h["sig_len"] / h["fs"], 2) if h["fs"] else None
+    meta["n_records"]    = h["n_records"]
+    return meta
 
-
-# ── Q1: Parser coverage report ───────────────────────────────────────────────
 
 def get_ecg_parser_coverage_report() -> dict[str, Any]:
     """
-    Runs _parse_ecg_comments across ALL ECG participants and returns:
-      - total_ecg_files   : number of participants with an ECG .hea file
-      - date_parsed_n     : successfully extracted a recording_date
-      - date_parsed_pct   : percentage of above
-      - failure_modes     : dict of failure reason → count
-          "missing_validation_date" : field absent from comments
-          "malformed_date"          : field present but strptime failed
-          "no_hea_file"             : .hea not found for participant with ECG flag
-
-    Intended for offline reporting / manuscript verification; not exposed
-    as a live API endpoint because it scans the full directory.
+    Runs the validation_date parser across ALL participants flagged with ECG.
+    Returns extraction coverage and a breakdown of failure modes. This
+    measures whether a date can be extracted, not whether it is the
+    acquisition date — see scripts/ecg_date_audit.py for that check.
     """
     participants = load_participants()
-    ecg_pids     = participants[participants["cardiac_ecg"] == True]["person_id"].astype(str).tolist()
+    ecg_pids = participants[participants["cardiac_ecg"] == True]["person_id"].astype(str).tolist()
 
-    total_files     = 0
-    date_parsed_n   = 0
-    failure_modes   = {
-        "missing_validation_date": 0,
-        "malformed_date":          0,
-        "no_hea_file":             0,
-        "header_read_error":       0,
-    }
-
+    failure_modes = {"missing": 0, "malformed": 0, "no_hea_file": 0, "header_read_error": 0}
+    total_files = date_parsed_n = 0
     for pid in ecg_pids:
-        record_path = _find_ecg_record(pid)
-        if not record_path:
-            failure_modes["no_hea_file"] += 1
+        h = read_ecg_header(pid)
+        if not h["ok"]:
+            failure_modes[h["failure"]] += 1
             continue
-
         total_files += 1
-        try:
-            import wfdb
-            header   = wfdb.rdheader(record_path)
-            comments = header.comments or []
-
-            # Replicate validation_date extraction logic exactly
-            meta_raw: dict[str, str] = {}
-            for c in comments:
-                if ":" in c:
-                    key, _, val = c.partition(":")
-                    meta_raw[key.strip()] = val.strip()
-
-            vd = meta_raw.get("validation_date", "")
-            if not vd or len(vd) != 8:
-                failure_modes["missing_validation_date"] += 1
-            else:
-                try:
-                    datetime.strptime(vd, "%Y%m%d")
-                    date_parsed_n += 1
-                except ValueError:
-                    failure_modes["malformed_date"] += 1
-
-        except Exception:
-            failure_modes["header_read_error"] += 1
-
-    date_parsed_pct = round(date_parsed_n / total_files * 100, 1) if total_files else 0.0
+        d, failure = parse_yyyymmdd(comments_to_dict(h["comments"]).get("validation_date"))
+        if d:
+            date_parsed_n += 1
+        else:
+            failure_modes[failure] += 1
 
     return {
         "total_ecg_participants_flagged": len(ecg_pids),
         "total_hea_files_found":          total_files,
         "date_parsed_n":                  date_parsed_n,
-        "date_parsed_pct":                date_parsed_pct,
+        "date_parsed_pct":                round(date_parsed_n / total_files * 100, 1) if total_files else 0.0,
         "failure_modes":                  failure_modes,
     }
 
 
-# ── CGM temporal helpers ─────────────────────────────────────────────────────
+# ── CGM helpers ──────────────────────────────────────────────────────────────
+
+def _cgm_path(person_id: str) -> str | None:
+    settings = get_settings()
+    primary = os.path.join(settings.cgm_dir, person_id, f"{person_id}_DEX.json")
+    if os.path.exists(primary):
+        return primary
+    files = sorted(glob.glob(os.path.join(settings.cgm_dir, person_id, "*.json")))
+    return files[0] if files else None
+
 
 def _get_cgm_window(person_id: str) -> dict[str, Any] | None:
-    """Returns CGM start/end dates and dropout rate for a participant.
+    """Returns CGM start/end dates, dropout and glucose summary for a participant.
 
     Timestamps are compared at calendar-date granularity; CGM data is
     stored in UTC (ISO 8601 with Z suffix) while visit_occurrence dates
     are timezone-naive. Sub-day alignment is not guaranteed.
     """
-    settings = get_settings()
-    primary  = os.path.join(
-        settings.dataset_root,
-        "wearable_blood_glucose", "continuous_glucose_monitoring",
-        "dexcom_g6", person_id, f"{person_id}_DEX.json",
-    )
-    if not os.path.exists(primary):
-        files = glob.glob(os.path.join(
-            settings.dataset_root, "wearable_blood_glucose",
-            "continuous_glucose_monitoring", "dexcom_g6",
-            person_id, "*.json",
-        ))
-        if not files:
-            return None
-        primary = files[0]
-
-    try:
-        with open(primary) as f:
-            data = json.load(f)
-        cgm_list = data.get("body", {}).get("cgm", [])
-        if not cgm_list:
-            return None
-
-        timestamps = []
-        for entry in cgm_list:
-            tf = entry.get("effective_time_frame", {})
-            ts = (tf.get("date_time") or
-                  tf.get("time_interval", {}).get("start_date_time"))
-            if ts:
-                timestamps.append(ts)
-
-        if not timestamps:
-            return None
-
-        timestamps.sort()
-        t0 = datetime.fromisoformat(timestamps[0].replace("Z", "+00:00"))
-        t1 = datetime.fromisoformat(timestamps[-1].replace("Z", "+00:00"))
-        days_covered = (t1 - t0).total_seconds() / 86400
-
-        # Dropout: expected 288 readings/day (5-min intervals)
-        expected   = max(1, days_covered * 288)
-        actual     = len(timestamps)
-        dropout_pct = round(max(0, (expected - actual) / expected) * 100, 1)
-
-        return {
-            "cgm_start":    timestamps[0][:10],   # calendar date, UTC
-            "cgm_end":      timestamps[-1][:10],  # calendar date, UTC
-            "days_covered": round(days_covered, 1),
-            "n_readings":   actual,
-            "dropout_pct":  dropout_pct,
-        }
-    except Exception:
+    path = _cgm_path(person_id)
+    if not path:
         return None
+    try:
+        with open(path) as f:
+            doc = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return None
+    stamps, values = cgm_readings_from_omh(doc)
+    return summarise_cgm(stamps, values)
+
+
+# ── Visit dates ──────────────────────────────────────────────────────────────
+
+@lru_cache(maxsize=1)
+def earliest_visit_dates() -> dict[str, str]:
+    """person_id → earliest OMOP visit_start_date (ISO calendar date)."""
+    from services.omop_service import _load_visit_occurrence
+
+    visits = _load_visit_occurrence()
+    earliest = (
+        visits.dropna(subset=["visit_start_date"])
+        .sort_values("visit_start_date")
+        .groupby("person_id")
+        .first()["visit_start_date"]
+    )
+    return {str(pid): d.date().isoformat() for pid, d in earliest.items()}
+
+
+def _days_between(a: str | None, b: str | None) -> int | None:
+    """(a − b) in whole days, for ISO calendar dates."""
+    if not a or not b:
+        return None
+    try:
+        return (datetime.fromisoformat(a).date() - datetime.fromisoformat(b).date()).days
+    except ValueError:
+        return None
+
+
+def extract_participant_readiness(person_id: str, row: pd.Series | dict | None = None) -> dict[str, Any]:
+    """
+    One flat record per participant covering all three readiness axes.
+    This is the row format of results/participant_readiness.csv.
+    """
+    row = row if row is not None else {}
+    get = row.get if hasattr(row, "get") else (lambda k, d=None: d)
+
+    visit = earliest_visit_dates().get(person_id)
+    rec: dict[str, Any] = {
+        "person_id":         person_id,
+        "clinical_site":     get("clinical_site"),
+        "study_group":       get("study_group"),
+        "recommended_split": get("recommended_split"),
+        "age":               get("age"),
+        "flag_ecg":          bool(get("cardiac_ecg", False)),
+        "flag_cgm":          bool(get("wearable_blood_glucose", False)),
+        "has_clinical":      bool(get("clinical_data", False)),
+        "visit_date":        visit,
+        "visit_date_tsv":    get("study_visit_date"),
+    }
+
+    # ECG
+    h = read_ecg_header(person_id)
+    rec["has_ecg_file"]     = h["failure"] != "no_hea_file"
+    rec["ecg_n_records"]    = h.get("n_records", 0)
+    rec["ecg_header_ok"]    = h["ok"]
+    rec["ecg_base_date_set"] = bool(h.get("base_date")) if h["ok"] else None
+    if h["ok"]:
+        meta = _parse_ecg_comments(h["comments"])
+        rec.update({
+            "ecg_date":         meta["recording_date"],
+            "ecg_date_failure": meta["recording_date_failure"],
+            "ecg_verdict":      meta["ecg_verdict"],
+            "ecg_hr":           meta["hr"],
+            "ecg_pr":           meta["pr"],
+            "ecg_qrsd":         meta["qrsd"],
+            "ecg_qt":           meta["qt"],
+            "ecg_qtc":          meta["qtc"],
+            "ecg_firmware":     meta["firmware"],
+        })
+    else:
+        rec.update({"ecg_date": None, "ecg_date_failure": h["failure"], "ecg_verdict": None})
+
+    # CGM
+    cgm = _get_cgm_window(person_id)
+    rec["has_cgm_file"] = _cgm_path(person_id) is not None
+    if cgm:
+        rec.update({
+            "cgm_start":           cgm["cgm_start"],
+            "cgm_start_utc_hour":  cgm["cgm_start_utc_hour"],
+            "cgm_end":             cgm["cgm_end"],
+            "cgm_days":            cgm["days_covered"],
+            "cgm_n_readings":      cgm["n_readings"],
+            "cgm_dropout_pct":     cgm["dropout_pct"],
+            "cgm_dropout_nominal_pct": cgm["dropout_nominal_pct"],
+            "cgm_mean":            cgm.get("glucose_mean"),
+            "cgm_sd":              cgm.get("glucose_sd"),
+            "cgm_cv":              cgm.get("glucose_cv"),
+            "cgm_tir":             cgm.get("tir_pct"),
+            "cgm_tbr":             cgm.get("tbr_pct"),
+            "cgm_tar":             cgm.get("tar_pct"),
+            "cgm_gmi":             cgm.get("gmi_pct"),
+        })
+
+    # Temporal offsets (days, signed: modality − anchor)
+    rec["cgm_offset_days"]     = _days_between(rec.get("cgm_start"), visit)
+    rec["ecg_offset_days"]     = _days_between(rec.get("ecg_date"), visit)
+    rec["ecg_cgm_offset_days"] = _days_between(rec.get("ecg_date"), rec.get("cgm_start"))
+    rec["visit_tsv_offset_days"] = _days_between(
+        str(rec["visit_date_tsv"])[:10] if rec["visit_date_tsv"] else None, visit
+    )
+    return rec
 
 
 # ── Temporal Overlap ─────────────────────────────────────────────────────────
 
-def get_temporal_overlap_participant(person_id: str) -> dict[str, Any]:
+def get_temporal_overlap_participant(person_id: str, tau_days: int = DEFAULT_TAU_DAYS) -> dict[str, Any]:
     """
     Returns the full temporal timeline for a single participant:
     - Clinical visit date (from visit_occurrence.csv)
     - CGM window (start/end, UTC-derived calendar dates)
-    - ECG recording date (from .hea validation_date comment, or None)
-    - Wearable coverage (days_covered)
+    - ECG date (from the .hea validation_date comment, or None)
+    - Signed offsets from the visit and co-registration flags at tolerance tau
 
     All date comparisons are at calendar-date granularity.
     """
@@ -297,23 +364,11 @@ def get_temporal_overlap_participant(person_id: str) -> dict[str, Any]:
     cgm      = _get_cgm_window(person_id)
     ecg_meta = get_ecg_metadata(person_id)
 
-    primary_visit_date = None
-    if visits:
-        for v in visits:
-            if v["visit_start_date"]:
-                primary_visit_date = v["visit_start_date"]
-                break
+    primary_visit_date = next((v["visit_start_date"] for v in visits if v["visit_start_date"]), None)
 
-    cgm_offset_days   = None
-    cgm_duration_days = None
-    if cgm and primary_visit_date:
-        try:
-            vd = datetime.strptime(primary_visit_date, "%Y-%m-%d").date()
-            cd = datetime.strptime(cgm["cgm_start"], "%Y-%m-%d").date()
-            cgm_offset_days   = (cd - vd).days
-            cgm_duration_days = cgm["days_covered"]
-        except Exception:
-            pass
+    cgm_offset = _days_between(cgm["cgm_start"], primary_visit_date) if cgm else None
+    ecg_date   = ecg_meta["recording_date"] if ecg_meta else None
+    ecg_offset = _days_between(ecg_date, primary_visit_date)
 
     return {
         "person_id":          person_id,
@@ -323,165 +378,96 @@ def get_temporal_overlap_participant(person_id: str) -> dict[str, Any]:
         "cgm_end":            cgm["cgm_end"]       if cgm else None,
         "cgm_days":           cgm["days_covered"]  if cgm else None,
         "cgm_dropout_pct":    cgm["dropout_pct"]   if cgm else None,
+        "cgm_dropout_nominal_pct": cgm["dropout_nominal_pct"] if cgm else None,
         "cgm_n_readings":     cgm["n_readings"]    if cgm else None,
-        "cgm_offset_days":    cgm_offset_days,
-        "ecg_recording_date": ecg_meta["recording_date"] if ecg_meta else None,
+        "cgm_offset_days":    cgm_offset,
+        "ecg_recording_date": ecg_date,
+        "ecg_offset_days":    ecg_offset,
         "ecg_hr":             ecg_meta.get("hr")   if ecg_meta else None,
         "ecg_qtc":            ecg_meta.get("qtc")  if ecg_meta else None,
         "ecg_interpretation": ecg_meta.get("interpretation") if ecg_meta else None,
+        "ecg_verdict":        ecg_meta.get("ecg_verdict") if ecg_meta else None,
         "ecg_has_abnormal":   ecg_meta.get("has_abnormal_flag") if ecg_meta else None,
-        # Timezone transparency (Q2): dates are calendar-date granularity only.
-        # CGM timestamps derived from UTC; ECG date is a bare YYYYMMDD string;
-        # visit date is a timezone-naive OMOP calendar date.
+        "tau_days":           tau_days,
+        "cgm_co_registered":  cgm_offset is not None and abs(cgm_offset) <= tau_days,
+        "ecg_co_registered":  ecg_offset is not None and abs(ecg_offset) <= tau_days,
         "_tz_note": "calendar-date granularity; sub-day alignment not guaranteed",
     }
 
 
-# ── Q7: Site- and group-stratified temporal overlap ──────────────────────────
-
 @lru_cache(maxsize=1)
 def get_temporal_overlap_cohort() -> dict[str, Any]:
     """
-    Cohort-level temporal overlap summary.
-
-    Returns:
-      - Aggregate ECG/CGM presence counts (total and %)
-      - Per-participant summary rows (has_cgm, has_ecg, visit_date)
-      - NEW (Q7): site_group_breakdown — presence counts stratified by
-        clinical_site × study_group, enabling site-level discrepancy checks.
-
-    Sampling note (Q3): scans all participants for file presence (fast,
-    O(N) filesystem stat) but does NOT perform full CGM parse for the
-    cohort view; that is reserved for the Signal Quality module's 200-sample
-    draw which uses a head-slice for guaranteed sub-second response.
+    Cohort-level file-presence summary for ECG and CGM, overall and
+    stratified by clinical_site × study_group. Scans all participants
+    (O(N) filesystem stat, no CGM parse). Cohort-wide temporal offsets
+    come from the offline audit (see get_temporal_offsets()).
     """
-    from services.omop_service import _load_visit_occurrence
-
     participants = load_participants()
-    visits_df    = _load_visit_occurrence()
+    visits       = earliest_visit_dates()
+    settings     = get_settings()
 
-    earliest_visits = (
-        visits_df.sort_values("visit_start_date")
-        .groupby("person_id")
-        .first()
-        .reset_index()[["person_id", "visit_start_date"]]
-    )
-    earliest_visits["visit_start_date"] = pd.to_datetime(
-        earliest_visits["visit_start_date"], errors="coerce"
-    )
-
-    rows          = []
-    ecg_dates_ok  = 0
-    cgm_dates_ok  = 0
-    both_ok       = 0
-
-    settings = get_settings()
-
-    # ── Per-participant file-presence scan ───────────────────────────────
+    rows = []
     for _, part_row in participants.iterrows():
         pid = str(part_row["person_id"])
-
-        visit_row  = earliest_visits[earliest_visits["person_id"] == pid]
-        visit_date = None
-        if not visit_row.empty:
-            vd = visit_row.iloc[0]["visit_start_date"]
-            if pd.notna(vd):
-                visit_date = vd.date().isoformat()
-
-        cgm_path = os.path.join(
-            settings.dataset_root,
-            "wearable_blood_glucose", "continuous_glucose_monitoring",
-            "dexcom_g6", pid, f"{pid}_DEX.json",
-        )
-        has_cgm_file = os.path.exists(cgm_path)
-
-        ecg_pattern  = os.path.join(settings.ecg_dir, pid, "*.hea")
-        has_ecg_file = bool(glob.glob(ecg_pattern))
-
-        row = {
-            "person_id":    pid,
+        has_cgm = os.path.exists(os.path.join(settings.cgm_dir, pid, f"{pid}_DEX.json"))
+        has_ecg = bool(glob.glob(os.path.join(settings.ecg_dir, pid, "*.hea")))
+        rows.append({
+            "person_id":     pid,
             "clinical_site": str(part_row.get("clinical_site", "")),
-            "study_group":  str(part_row.get("study_group", "")),
-            "visit_date":   visit_date,
-            "has_cgm":      has_cgm_file,
-            "has_ecg":      has_ecg_file,
-            "cgm_days":     None,
-            "cgm_dropout":  None,
-            "cgm_offset":   None,
-        }
+            "study_group":   str(part_row.get("study_group", "")),
+            "visit_date":    visits.get(pid),
+            "has_cgm":       has_cgm,
+            "has_ecg":       has_ecg,
+        })
 
-        if has_cgm_file:
-            cgm_dates_ok += 1
-        if has_ecg_file:
-            ecg_dates_ok += 1
-        if has_cgm_file and has_ecg_file:
-            both_ok += 1
-
-        rows.append(row)
-
-    total    = len(rows)
-    cgm_pct  = round(cgm_dates_ok / total * 100, 1) if total else 0
-    ecg_pct  = round(ecg_dates_ok / total * 100, 1) if total else 0
-    both_pct = round(both_ok      / total * 100, 1) if total else 0
-
-    # ── Q7: Site × study-group stratified breakdown ──────────────────────
     rows_df = pd.DataFrame(rows)
-
-    SITE_ORDER  = ["UW", "UCSD", "UAB"]
-    GROUP_SHORT = {
-        "healthy":                                                                    "Healthy",
-        "pre_diabetes_lifestyle_controlled":                                          "Pre-DM",
-        "oral_medication_and_or_non_insulin_injectable_medication_controlled":        "Oral Med.",
-        "insulin_dependent":                                                          "Insulin",
-    }
+    total   = len(rows_df)
+    n_cgm   = int(rows_df["has_cgm"].sum()) if total else 0
+    n_ecg   = int(rows_df["has_ecg"].sum()) if total else 0
+    n_both  = int((rows_df["has_cgm"] & rows_df["has_ecg"]).sum()) if total else 0
+    pct     = lambda k: round(k / total * 100, 1) if total else 0  # noqa: E731
 
     site_group_breakdown = []
-    for site in SITE_ORDER:
-        site_df = rows_df[rows_df["clinical_site"] == site]
+    for site in ["UW", "UCSD", "UAB"]:
+        site_df = rows_df[rows_df["clinical_site"] == site] if total else rows_df
         if site_df.empty:
             continue
         groups = []
-        for grp_key, grp_label in GROUP_SHORT.items():
+        for grp_key, grp_label in STUDY_GROUP_SHORT.items():
             g_df = site_df[site_df["study_group"] == grp_key]
             if g_df.empty:
                 continue
-            n         = len(g_df)
-            n_cgm     = int(g_df["has_cgm"].sum())
-            n_ecg     = int(g_df["has_ecg"].sum())
-            n_both    = int((g_df["has_cgm"] & g_df["has_ecg"]).sum())
+            n = len(g_df)
+            k_cgm, k_ecg = int(g_df["has_cgm"].sum()), int(g_df["has_ecg"].sum())
+            k_both = int((g_df["has_cgm"] & g_df["has_ecg"]).sum())
             groups.append({
                 "study_group":       grp_key,
                 "study_group_label": grp_label,
                 "n":                 n,
-                "n_cgm":             n_cgm,
-                "n_ecg":             n_ecg,
-                "n_both":            n_both,
-                "cgm_pct":           round(n_cgm  / n * 100, 1),
-                "ecg_pct":           round(n_ecg  / n * 100, 1),
-                "both_pct":          round(n_both / n * 100, 1),
+                "n_cgm":             k_cgm,
+                "n_ecg":             k_ecg,
+                "n_both":            k_both,
+                "cgm_pct":           round(k_cgm  / n * 100, 1),
+                "ecg_pct":           round(k_ecg  / n * 100, 1),
+                "both_pct":          round(k_both / n * 100, 1),
             })
-        site_group_breakdown.append({
-            "site":   site,
-            "n":      len(site_df),
-            "groups": groups,
-        })
+        site_group_breakdown.append({"site": site, "n": len(site_df), "groups": groups})
 
     return {
-        "total_participants": total,
-        "cgm_present_n":      cgm_dates_ok,
-        "ecg_present_n":      ecg_dates_ok,
-        "both_present_n":     both_ok,
-        "cgm_pct":            cgm_pct,
-        "ecg_pct":            ecg_pct,
-        "both_pct":           both_pct,
-        "participants":       rows,
-        # Q7 addition
+        "total_participants":   total,
+        "cgm_present_n":        n_cgm,
+        "ecg_present_n":        n_ecg,
+        "both_present_n":       n_both,
+        "cgm_pct":              pct(n_cgm),
+        "ecg_pct":              pct(n_ecg),
+        "both_pct":             pct(n_both),
+        "participants":         rows,
         "site_group_breakdown": site_group_breakdown,
-        # Q3 transparency note
         "_sampling_note": (
-            "File-presence scan covers all participants (O(N) stat, no CGM parse). "
-            "Signal Quality module uses a head-slice of 200 participants for interactive "
-            "performance; full-cohort quality statistics require an offline batch pipeline."
+            "File-presence scan covers all participants. Cohort-wide temporal "
+            "offsets are computed by scripts/ecg_date_audit.py and served by "
+            "/api/eda/temporal-offsets."
         ),
     }
 
@@ -562,9 +548,9 @@ def get_comissingness_matrix(study_group: str | None = None) -> dict[str, Any]:
         for n in range(0, len(present_cols) + 1)
     ]
 
-    full_df       = load_participants()
+    full_df        = load_participants()
     triple_overlap = []
-    triple_cols   = ["cardiac_ecg", "wearable_blood_glucose", "clinical_data"]
+    triple_cols    = ["cardiac_ecg", "wearable_blood_glucose", "clinical_data"]
     triple_present = [c for c in triple_cols if c in full_df.columns]
     if len(triple_present) == 3:
         for sg, sg_label in STUDY_GROUP_SHORT.items():
@@ -589,111 +575,101 @@ def get_comissingness_matrix(study_group: str | None = None) -> dict[str, Any]:
     }
 
 
-# ── Signal Quality ───────────────────────────────────────────────────────────
+# ── Precomputed results (offline pipeline) ───────────────────────────────────
 
-def get_signal_quality_summary() -> dict[str, Any]:
-    """
-    Aggregate signal quality metrics across the cohort.
+def load_result(name: str) -> dict[str, Any] | None:
+    """Loads results/<name> written by the scripts/ pipeline, or None."""
+    path = os.path.join(get_settings().results_dir, name)
+    if not os.path.exists(path):
+        return None
+    with open(path) as f:
+        return json.load(f)
 
-    Sampling strategy (Q3): uses a head-slice (first N in participants.tsv
-    ordering) rather than a random or stratified draw. This guarantees
-    sub-second API response for the interactive dashboard. The ordering
-    in participants.tsv is determined by the AI-READI dataset creators
-    and may correlate with enrollment date or site; a fully stratified
-    offline pipeline is listed in the development roadmap.
 
-    Reported hardware context (Q5): benchmarked on Azure Standard_D4s_v3
-    (4 vCPU, 16 GiB RAM). Cold-start latency for this endpoint is
-    reported in the manuscript; warm-cache latency for /api/cohort/summary
-    is <50ms.
-    """
-    participants = load_participants()
-    settings     = get_settings()
-
-    # ── CGM quality (head-slice, N=200) ──────────────────────────────────
-    cgm_participants = participants[participants["wearable_blood_glucose"] == True]["person_id"].astype(str).tolist()
-    cgm_sample       = cgm_participants[:200]
-
-    cgm_dropouts  = []
-    cgm_durations = []
-
-    for pid in cgm_sample:
-        cgm = _get_cgm_window(pid)
-        if cgm:
-            cgm_dropouts.append(cgm["dropout_pct"])
-            cgm_durations.append(cgm["days_covered"])
-
-    cgm_quality = {}
-    if cgm_dropouts:
-        cgm_quality = {
-            "n_sampled":             len(cgm_dropouts),
-            "n_total":               len(cgm_participants),
-            "sampling_method":       "head-slice (first 200 in participants.tsv)",
-            "mean_dropout_pct":      round(sum(cgm_dropouts) / len(cgm_dropouts), 1),
-            "pct_under5_dropout":    round(sum(1 for d in cgm_dropouts if d < 5)  / len(cgm_dropouts) * 100, 1),
-            "mean_duration_days":    round(sum(cgm_durations) / len(cgm_durations), 1),
-            "duration_hist":         _make_histogram(cgm_durations, bins=[0, 5, 8, 10, 12, 15, 20, 30]),
-            "dropout_hist":          _make_histogram(cgm_dropouts,  bins=[0, 2, 5, 10, 20, 50, 100]),
-        }
-
-    # ── ECG quality (head-slice, N=150) ──────────────────────────────────
-    ecg_participants = participants[participants["cardiac_ecg"] == True]["person_id"].astype(str).tolist()
-    ecg_sample       = ecg_participants[:150]
-
-    ecg_normal   = 0
-    ecg_abnormal = 0
-    ecg_hr_vals  = []
-    ecg_qtc_vals = []
-
-    for pid in ecg_sample:
-        meta = get_ecg_metadata(pid)
-        if not meta:
-            continue
-        if meta.get("has_abnormal_flag"):
-            ecg_abnormal += 1
-        else:
-            ecg_normal += 1
-        if meta.get("hr"):
-            ecg_hr_vals.append(meta["hr"])
-        if meta.get("qtc"):
-            ecg_qtc_vals.append(meta["qtc"])
-
-    ecg_quality   = {}
-    n_ecg_sampled = ecg_normal + ecg_abnormal
-    if n_ecg_sampled:
-        ecg_quality = {
-            "n_sampled":             n_ecg_sampled,
-            "n_total":               len(ecg_participants),
-            "sampling_method":       "head-slice (first 150 in participants.tsv)",
-            "pct_normal":            round(ecg_normal   / n_ecg_sampled * 100, 1),
-            "pct_abnormal_flag":     round(ecg_abnormal / n_ecg_sampled * 100, 1),
-            "mean_hr":               round(sum(ecg_hr_vals)  / len(ecg_hr_vals),  1) if ecg_hr_vals  else None,
-            "mean_qtc":              round(sum(ecg_qtc_vals) / len(ecg_qtc_vals), 1) if ecg_qtc_vals else None,
-            "hr_hist":               _make_histogram(ecg_hr_vals,  bins=[30, 50, 60, 70, 80, 90, 100, 120, 150]),
-            "qtc_hist":              _make_histogram(ecg_qtc_vals, bins=[350, 380, 400, 420, 440, 460, 500]),
-            "device_model":          "Philips PageWriter TC30",
-            "firmware":              "A.07.07.07",
-            "hp_filter_hz":          0.15,
-            "lp_filter_hz":          100,
-            "notch_filter_hz":       60,
-            "sampling_rate_hz":      500,
-        }
-
+def get_temporal_offsets() -> dict[str, Any] | None:
+    """Cohort-wide ECG/CGM/visit offset distributions from scripts/ecg_date_audit.py."""
+    audit = load_result("ecg_date_audit.json")
+    if audit is None:
+        return None
     return {
-        "cgm": cgm_quality,
-        "ecg": ecg_quality,
+        "offsets":        audit.get("offsets"),
+        "interpretation": audit.get("validation_date_interpretation"),
+        "extraction":     audit.get("extraction"),
+        "_meta":          audit.get("_meta"),
     }
 
 
+def get_readiness_funnel() -> dict[str, Any] | None:
+    """Participants retained at each readiness gate, from scripts/full_cohort_quality.py."""
+    quality = load_result("quality_full.json")
+    if quality is None or "funnel" not in quality:
+        return None
+    return {"funnel": quality["funnel"], "params": quality.get("gate_params"), "_meta": quality.get("_meta")}
+
+
+# ── Signal Quality ───────────────────────────────────────────────────────────
+
+def get_signal_quality_summary(source: str = "auto") -> dict[str, Any]:
+    """
+    Aggregate signal-quality metrics.
+
+    source="auto"        full-cohort results if results/quality_full.json
+                         exists, otherwise a live stratified sample
+    source="precomputed" full-cohort results only (FileNotFoundError if absent)
+    source="sample"      live sample: a seeded random draw stratified by
+                         study group (200 CGM, 150 ECG participants)
+    """
+    if source in ("auto", "precomputed"):
+        full = load_result("quality_full.json")
+        if full is not None:
+            out = dict(full["summary"])
+            out["source"] = "precomputed_full_cohort"
+            out["_meta"] = full.get("_meta")
+            return out
+        if source == "precomputed":
+            raise FileNotFoundError(
+                "results/quality_full.json not found — run scripts/full_cohort_quality.py"
+            )
+
+    participants = load_participants()
+
+    cgm_pool = participants[participants["wearable_blood_glucose"] == True]
+    cgm_sample = stratified_sample(cgm_pool, LIVE_SAMPLE_CGM, "study_group", LIVE_SAMPLE_SEED)
+    cgm_records = [w for w in (_get_cgm_window(str(p)) for p in cgm_sample["person_id"]) if w]
+
+    ecg_pool = participants[participants["cardiac_ecg"] == True]
+    ecg_sample = stratified_sample(ecg_pool, LIVE_SAMPLE_ECG, "study_group", LIVE_SAMPLE_SEED)
+    ecg_records = []
+    for pid in ecg_sample["person_id"]:
+        meta = get_ecg_metadata(str(pid))
+        if meta:
+            ecg_records.append({"verdict": meta["ecg_verdict"], "hr": meta["hr"], "qtc": meta["qtc"]})
+
+    method = (f"stratified random sample by study group (seed {LIVE_SAMPLE_SEED}); "
+              "run scripts/full_cohort_quality.py for full-cohort statistics")
+    out = summarise_quality(
+        cgm_records, ecg_records,
+        sampling_method=method,
+        n_total_cgm=len(cgm_pool),
+        n_total_ecg=len(ecg_pool),
+    )
+    if out["ecg"]:
+        out["ecg"].update(ECG_PROVENANCE)
+    out["source"] = "live_sample"
+    return out
+
+
+# Sensor provenance reported alongside ECG quality (identical across sites
+# in AI-READI v3.0.0; verified per record by scripts/full_cohort_quality.py)
+ECG_PROVENANCE = {
+    "device_model":     "Philips PageWriter TC30",
+    "firmware":         "A.07.07.07",
+    "hp_filter_hz":     0.15,
+    "lp_filter_hz":     100,
+    "notch_filter_hz":  60,
+    "sampling_rate_hz": 500,
+}
+
+
 def _make_histogram(values: list[float], bins: list[float]) -> list[dict]:
-    if not values:
-        return []
-    result = []
-    for i in range(len(bins) - 1):
-        lo, hi = bins[i], bins[i + 1]
-        count  = sum(1 for v in values if lo <= v < hi)
-        result.append({"bin": f"{lo}–{hi}", "lo": lo, "hi": hi, "count": count})
-    overflow = sum(1 for v in values if v >= bins[-1])
-    if overflow:
-        result.append({"bin": f"≥{bins[-1]}", "lo": bins[-1], "hi": None, "count": overflow})
-    return result
+    return make_histogram(values, bins)

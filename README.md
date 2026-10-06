@@ -12,6 +12,7 @@ Navigating the 3.82 TB AI-READI dataset can be daunting. This dashboard bridges 
 * **Explore Cohorts:** Filter 2,280 participant cohorts across 4 diabetic severity groups and 3 clinical sites.
 * **Visualize Multi-modal Data:** Seamlessly view 12-lead ECG waveforms, continuous glucose monitoring (CGM) traces, and Garmin wearable vitals on a per-patient basis.
 * **Track Distributions:** Monitor enrollment trends, recommended ML splits (Train/Val/Test), and modality coverage overlaps.
+* **Assess Data Readiness:** Measure coverage, temporal co-registration and signal integrity for the whole cohort, and see how many participants survive each readiness gate.
 ---
 
 ## 📸 Dashboard Gallery
@@ -61,8 +62,20 @@ aireadi-dashboard/
 │   ├── package.json
 │   └── vite.config.js
 ├── scripts/
-│   ├── preprocess.py      # One-time data indexing script
-│   └── verify_dataset.py  # Sanity check dataset paths
+│   ├── preprocess.py                 # One-time data indexing script
+│   ├── verify_dataset.py             # Sanity check dataset paths
+│   ├── build_readiness_table.py      # Evidence pipeline: one pass over every participant
+│   ├── ecg_date_audit.py             #   ECG date extraction, meaning and co-registration
+│   ├── full_cohort_quality.py        #   Full-cohort CGM/ECG quality + readiness funnel
+│   ├── gating_experiment.py          #   Does readiness gating change T2D diagnosis?
+│   ├── benchmark_api.py              #   Measured runtimes vs a manual baseline
+│   ├── score_usability.py            #   Usability study scoring (SUS, task success)
+│   ├── make_paper_assets.py          #   LaTeX tables, figures, numbers.md
+│   ├── run_evidence_pipeline.sh      #   All of the above in order
+│   └── make_synthetic_dataset.py     # AI-READI-shaped synthetic data for tests/demos
+├── tests/                 # pytest suite (synthetic data only)
+├── results/               # Pipeline outputs (git-ignored; derived from DUA data)
+├── docs/                  # VM run guide, reproducibility map, usability kit
 ├── data/
 │   └── participants_index.json  # Pre-built participant index
 ├── .env.example
@@ -147,6 +160,33 @@ docker-compose up --build
 | `GET /api/patients/{id}/ecg` | 12-lead ECG waveform data |
 | `GET /api/patients/{id}/wearable` | Garmin wearable summary |
 | `GET /api/patients/{id}/summary` | AI-generated clinical summary |
+| `GET /api/eda/temporal-overlap/{id}?tau_days=7` | Per-participant visit / CGM / ECG timeline with offsets |
+| `GET /api/eda/temporal-offsets` | Cohort-wide ECG−visit, CGM−visit, ECG−CGM offsets (precomputed) |
+| `GET /api/eda/comissingness` | Pairwise modality co-presence, triple overlap |
+| `GET /api/eda/signal-quality?source=auto` | CGM dropout and four-way Philips ECG verdict with 95% CIs |
+| `GET /api/eda/readiness-funnel` | Participants retained at each readiness gate (precomputed) |
+
+---
+
+## Readiness evidence pipeline
+
+The numbers in the accompanying paper come from an offline pipeline that scans
+every participant (no sampling) and writes to `results/`. Run it on the machine
+that holds the dataset — see **[docs/VM_RUN_GUIDE.md](docs/VM_RUN_GUIDE.md)**:
+
+```bash
+pip install -r requirements-dev.txt
+pytest                                  # synthetic data only
+bash scripts/run_evidence_pipeline.sh   # real data, from .env DATASET_ROOT
+```
+
+Once `results/quality_full.json` exists, the dashboard serves full-cohort
+statistics instead of a sample. [docs/REPRODUCIBILITY.md](docs/REPRODUCIBILITY.md)
+maps each output to the claim it supports; `results/paper/numbers.md` lists every
+reported number with its source.
+
+No dataset access? `python scripts/make_synthetic_dataset.py --out /tmp/synth`
+creates a synthetic dataset with the same layout (all values random).
 
 ---
 
@@ -166,7 +206,7 @@ docker-compose up --build
 | Frontend | React 18, Vite, Recharts, Tailwind CSS |
 | Backend | FastAPI, WFDB, Pandas, Pydantic |
 | Data formats | WFDB (ECG), OMOP CSV (clinical), Open mHealth JSON (CGM) |
-| Deployment | Docker Compose on Azure VM |
+| Deployment | Docker Compose on a cloud VM (tested: 4 vCPU, 32 GiB) |
 
 ## References
 <a id="1">[1]</a> 

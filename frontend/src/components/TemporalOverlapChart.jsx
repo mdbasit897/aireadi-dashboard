@@ -11,7 +11,10 @@ function TimelineStrip({ data }) {
 
   const { visit_date, cgm_start, cgm_end, cgm_days, cgm_dropout_pct,
           ecg_recording_date, ecg_hr, ecg_qtc, ecg_interpretation,
-          ecg_has_abnormal } = data
+          ecg_has_abnormal, cgm_offset_days, ecg_offset_days,
+          cgm_co_registered, ecg_co_registered, tau_days } = data
+
+  const offsetText = d => d == null ? null : d === 0 ? 'same day as visit' : `${d > 0 ? '+' : ''}${d} d from visit`
 
   const hasVisit = !!visit_date
   const hasCGM   = !!cgm_start
@@ -119,14 +122,14 @@ function TimelineStrip({ data }) {
                   background: ecg_has_abnormal ? '#E24B4A' : '#1D9E75',
                   border: '2px solid #fff',
                 }}
-                title={`ECG: ${ecg_recording_date}`}
+                title={`ECG header validation_date: ${ecg_recording_date} (identical for every record in AI-READI v3.0.0; not the acquisition date)`}
               />
               <div
                 className="w-px"
                 style={{ height: 16, background: 'rgba(29,158,117,0.5)' }}
               />
               <span className="text-xs whitespace-nowrap" style={{ color: '#5DCAA5' }}>
-                ECG
+                ECG hdr date
               </span>
             </div>
           )}
@@ -159,13 +162,23 @@ function TimelineStrip({ data }) {
               {cgm_days}d · {cgm_dropout_pct}% dropout
             </p>
           )}
+          {cgm_offset_days != null && (
+            <p className="text-xs mt-0.5" style={{ color: cgm_co_registered ? '#1D9E75' : '#E24B4A' }}>
+              {offsetText(cgm_offset_days)} · {cgm_co_registered ? `within ±${tau_days} d` : `outside ±${tau_days} d`}
+            </p>
+          )}
         </div>
         <div className="card2 p-3">
-          <p className="text-xs mb-1" style={{ color: 'var(--c-muted)' }}>ECG recording</p>
+          <p className="text-xs mb-1" style={{ color: 'var(--c-muted)' }}>ECG header date (validation_date)</p>
           <p className="text-sm font-semibold">{formatDate(ecg_recording_date)}</p>
           {hasECG && (
             <p className="text-xs mt-0.5" style={{ color: ecg_has_abnormal ? '#E24B4A' : '#5DCAA5' }}>
               {ecg_interpretation || (ecg_has_abnormal ? 'Abnormal flag' : 'Normal')}
+            </p>
+          )}
+          {ecg_offset_days != null && (
+            <p className="text-xs mt-0.5" style={{ color: ecg_co_registered ? '#1D9E75' : '#E24B4A' }}>
+              {offsetText(ecg_offset_days)} · {ecg_co_registered ? `within ±${tau_days} d` : `outside ±${tau_days} d`}
             </p>
           )}
         </div>

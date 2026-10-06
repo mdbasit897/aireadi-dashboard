@@ -7,6 +7,8 @@ from typing import Optional
 from services.eda_service import (
     get_temporal_overlap_participant,
     get_temporal_overlap_cohort,
+    get_temporal_offsets,
+    get_readiness_funnel,
     get_comissingness_matrix,
     get_signal_quality_summary,
     get_ecg_metadata,
@@ -31,14 +33,49 @@ def temporal_overlap_cohort():
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.get("/temporal-offsets")
+def temporal_offsets():
+    """
+    Cohort-wide distributions of ECG−visit, CGM−visit and ECG−CGM offsets,
+    overall and by site, with the extraction audit. Precomputed by
+    scripts/ecg_date_audit.py.
+    """
+    data = get_temporal_offsets()
+    if data is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Temporal offset audit not found. Run: python scripts/ecg_date_audit.py",
+        )
+    return data
+
+
+@router.get("/readiness-funnel")
+def readiness_funnel():
+    """
+    Participants retained at each readiness gate (coverage → integrity →
+    temporal), overall and per study group. Precomputed by
+    scripts/full_cohort_quality.py.
+    """
+    data = get_readiness_funnel()
+    if data is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Readiness funnel not found. Run: python scripts/full_cohort_quality.py",
+        )
+    return data
+
+
 @router.get("/temporal-overlap/{person_id}")
-def temporal_overlap_participant(person_id: str):
+def temporal_overlap_participant(
+    person_id: str,
+    tau_days: int = Query(7, ge=0, le=365, description="Co-registration tolerance in days"),
+):
     """
     Full temporal timeline for a single participant:
-    visit date, CGM window, ECG recording date.
+    visit date, CGM window, ECG date, offsets and co-registration flags.
     """
     try:
-        return get_temporal_overlap_participant(person_id)
+        return get_temporal_overlap_participant(person_id, tau_days=tau_days)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -58,14 +95,20 @@ def comissingness_matrix(
 
 
 @router.get("/signal-quality")
-def signal_quality():
+def signal_quality(
+    source: str = Query("auto", pattern="^(auto|precomputed|sample)$",
+                        description="auto | precomputed (full cohort) | sample (live stratified sample)"),
+):
     """
-    Aggregate signal quality metrics:
-    CGM dropout rates, ECG interpretation flags, HR/QTc distributions.
-    Samples up to 200 participants per modality for performance.
+    Aggregate signal quality metrics: CGM dropout, the Philips four-way ECG
+    verdict with 95% Wilson CIs, and HR/QTc distributions. Serves the
+    full-cohort results from scripts/full_cohort_quality.py when available,
+    otherwise a seeded study-group-stratified live sample.
     """
     try:
-        return get_signal_quality_summary()
+        return get_signal_quality_summary(source=source)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

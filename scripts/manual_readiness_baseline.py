@@ -50,7 +50,7 @@ DATASET_ROOT = os.environ.get(
 
 # Which study group to scope (mirrors the paper's insulin-dependent walkthrough).
 # Adjust the label to match the participants.tsv `study_group` encoding.
-TARGET_STUDY_GROUP = "insulin"  # substring match, case-insensitive
+TARGET_STUDY_GROUP = "insulin_dependent"
 
 
 # === BEGIN MANUAL BASELINE =====================================================

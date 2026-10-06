@@ -35,3 +35,8 @@ Thumbs.db
 # Logs
 *.log
 logs/
+
+# Evidence pipeline outputs (derived from DUA-protected data — never commit;
+# per-participant files such as participant_readiness.csv must stay on the VM)
+results/*
+!results/README.md
