@@ -24,6 +24,8 @@ from __future__ import annotations
 import argparse
 import math
 
+import pandas as pd
+
 from _common import banner, load_readiness_table, provenance, read_json, write_json
 
 HEAD_SLICE_CGM, HEAD_SLICE_ECG = 200, 150
@@ -144,9 +146,11 @@ def main() -> None:
 
     comparison = {}
     if head[0] and rest[0]:
-        hn, rn = head[0]["n_sampled"], rest[0]["n_sampled"]
-        hk = round(head[0]["pct_under_threshold"] / 100 * hn)
-        rk = round(rest[0]["pct_under_threshold"] / 100 * rn)
+        # exact counts (not reconstructed from rounded percentages)
+        h_drop = pd.to_numeric(cgm_head_rows["cgm_dropout_pct"], errors="coerce").dropna()
+        r_drop = pd.to_numeric(cgm_pool.drop(cgm_head_rows.index)["cgm_dropout_pct"], errors="coerce").dropna()
+        hn, rn = len(h_drop), len(r_drop)
+        hk, rk = int((h_drop < args.max_dropout).sum()), int((r_drop < args.max_dropout).sum())
         comparison["cgm_pct_under_threshold"] = {
             "head_slice": head[0]["pct_under_threshold"], "head_slice_ci95": head[0]["pct_under_threshold_ci95"],
             "remainder": rest[0]["pct_under_threshold"], "remainder_ci95": rest[0]["pct_under_threshold_ci95"],
