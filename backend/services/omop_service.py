@@ -163,10 +163,12 @@ def _normalize_unit_value(
     Otherwise logs a warning and returns (None, False) signalling exclusion.
     """
     canonical = CONCEPT_META.get(concept_id, {}).get("unit", "")
-    # A blank unit_source_value arrives as NaN, which str() turns into "nan"
-    if observed_unit is not None and str(observed_unit).strip().lower() in ("nan", "none"):
+    # Blank units arrive as NaN (which str() turns into "nan") or as
+    # whitespace-only strings; both are treated as the canonical unit.
+    observed_unit = "" if observed_unit is None else str(observed_unit).strip()
+    if observed_unit.lower() in ("nan", "none"):
         observed_unit = ""
-    if not observed_unit or observed_unit.strip() == canonical:
+    if not observed_unit or observed_unit == canonical:
         return value, False
 
     key = (observed_unit.strip(), canonical)

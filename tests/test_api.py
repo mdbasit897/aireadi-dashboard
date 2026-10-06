@@ -73,4 +73,6 @@ def test_blank_unit_is_not_treated_as_unknown():
 
     assert _normalize_unit_value(6.1, "nan", 3004410) == (6.1, False)
     assert _normalize_unit_value(6.1, "", 3004410) == (6.1, False)
+    assert _normalize_unit_value(27.0, "   ", 4245997) == (27.0, False)  # whitespace-only unit
+    assert _normalize_unit_value(6.1, " % ", 3004410) == (6.1, False)
     assert _normalize_unit_value(6.1, "furlongs", 3004410) == (None, False)
