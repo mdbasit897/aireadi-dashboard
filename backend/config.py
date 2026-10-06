@@ -1,10 +1,16 @@
 from pydantic_settings import BaseSettings
 from functools import lru_cache
+from pathlib import Path
 import os
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
 class Settings(BaseSettings):
     dataset_root: str = "/home/azureuser/Datasets/f9e65119-3f27-4525-a140-b4413222991d/dataset"
+    # Outputs of the offline evidence pipeline (scripts/). The API serves
+    # precomputed full-cohort results from here when they exist.
+    results_dir: str = str(REPO_ROOT / "results")
     environment: str = "development"
     backend_host: str = "0.0.0.0"
     backend_port: int = 8000
@@ -45,7 +51,8 @@ class Settings(BaseSettings):
         return os.path.join(self.dataset_root, "wearable_activity_monitor")
 
     class Config:
-        env_file = ".env"
+        # Repo-root .env first (works from any working directory), then ./.env
+        env_file = (str(REPO_ROOT / ".env"), ".env")
         env_file_encoding = "utf-8"
         extra = "ignore"
 

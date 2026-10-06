@@ -28,7 +28,7 @@ settings = get_settings()
 app = FastAPI(
     title="AI-READI Dashboard API",
     description="Backend for the AI-READI v3.0.0 Clinical Analytics Dashboard",
-    version="1.1.0",
+    version="1.2.0",
     docs_url="/docs" if settings.environment != "production" else None,
     redoc_url="/redoc" if settings.environment != "production" else None,
     lifespan=lifespan,
@@ -49,4 +49,4 @@ app.include_router(eda_router)
 
 @app.get("/api/health")
 def health_check():
-    return {"status": "ok", "dataset_root": settings.dataset_root, "version": "1.1.0"}
+    return {"status": "ok", "dataset_root": settings.dataset_root, "version": "1.2.0"}

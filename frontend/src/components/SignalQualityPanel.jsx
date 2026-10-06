@@ -76,11 +76,15 @@ function CGMQualityPanel({ cgm }) {
           <p className="text-xs" style={{ color: 'var(--c-muted)' }}>missing readings</p>
         </div>
         <div className="card2 p-3">
-          <p className="text-xs mb-1" style={{ color: 'var(--c-muted)' }}>&lt;5% dropout</p>
-          <p className="text-lg font-bold" style={{ fontFamily: 'Syne, sans-serif', color: '#1D9E75' }}>
-            {cgm.pct_under5_dropout}%
+          <p className="text-xs mb-1" style={{ color: 'var(--c-muted)' }}>
+            &lt;{cgm.dropout_threshold_pct ?? 10}% dropout
           </p>
-          <p className="text-xs" style={{ color: 'var(--c-muted)' }}>high quality</p>
+          <p className="text-lg font-bold" style={{ fontFamily: 'Syne, sans-serif', color: '#1D9E75' }}>
+            {cgm.pct_under_threshold ?? cgm.pct_under5_dropout}%
+          </p>
+          <p className="text-xs" style={{ color: 'var(--c-muted)' }}>
+            {cgm.pct_under_threshold_ci95 ? `95% CI ${cgm.pct_under_threshold_ci95[0]}–${cgm.pct_under_threshold_ci95[1]}` : 'passes integrity gate'}
+          </p>
         </div>
         <div className="card2 p-3">
           <p className="text-xs mb-1" style={{ color: 'var(--c-muted)' }}>Mean duration</p>
@@ -104,13 +108,24 @@ function CGMQualityPanel({ cgm }) {
         <span className="font-medium" style={{ color: 'var(--c-text)' }}>Device: </span>Dexcom G6 · 5-min intervals · factory-calibrated · no fingerstick required
         <br />
         <span className="font-medium" style={{ color: 'var(--c-text)' }}>Dropout definition: </span>
-        (expected readings − actual readings) / expected, where expected = days × 288
+        (expected readings − actual readings) / expected, where expected = days × 288 over the observed wear span
+        {cgm.mean_dropout_nominal_pct != null && (
+          <> · against the nominal 10-day wear: mean {cgm.mean_dropout_nominal_pct}%</>
+        )}
       </div>
     </div>
   )
 }
 
 // ── ECG Quality Panel ─────────────────────────────────────────────────────────
+
+const VERDICT_COLORS = {
+  normal: '#1D9E75',
+  otherwise_normal: '#5DCAA5',
+  borderline: '#BA7517',
+  abnormal: '#E24B4A',
+  unknown: '#888780',
+}
 
 function ECGQualityPanel({ ecg }) {
   if (!ecg || !Object.keys(ecg).length) return (
@@ -128,16 +143,16 @@ function ECGQualityPanel({ ecg }) {
           <p className="text-xs" style={{ color: 'var(--c-muted)' }}>of {ecg.n_total} with ECG</p>
         </div>
         <div className="card2 p-3">
-          <p className="text-xs mb-1" style={{ color: 'var(--c-muted)' }}>Normal interpretation</p>
-          <p className="text-lg font-bold" style={{ fontFamily: 'Syne, sans-serif', color: '#1D9E75' }}>
-            {ecg.pct_normal}%
-          </p>
-        </div>
-        <div className="card2 p-3">
-          <p className="text-xs mb-1" style={{ color: 'var(--c-muted)' }}>Abnormal flag</p>
+          <p className="text-xs mb-1" style={{ color: 'var(--c-muted)' }}>Abnormal verdict</p>
           <p className="text-lg font-bold" style={{ fontFamily: 'Syne, sans-serif', color: ecg.pct_abnormal_flag > 20 ? '#E24B4A' : '#BA7517' }}>
             {ecg.pct_abnormal_flag}%
           </p>
+          <p className="text-xs" style={{ color: 'var(--c-muted)' }}>strict "ABNORMAL ECG"</p>
+        </div>
+        <div className="card2 p-3">
+          <p className="text-xs mb-1" style={{ color: 'var(--c-muted)' }}>Mean QTc</p>
+          <p className="text-lg font-bold" style={{ fontFamily: 'Syne, sans-serif' }}>{ecg.mean_qtc}</p>
+          <p className="text-xs" style={{ color: 'var(--c-muted)' }}>ms</p>
         </div>
         <div className="card2 p-3">
           <p className="text-xs mb-1" style={{ color: 'var(--c-muted)' }}>Mean HR</p>
@@ -145,6 +160,23 @@ function ECGQualityPanel({ ecg }) {
           <p className="text-xs" style={{ color: 'var(--c-muted)' }}>bpm</p>
         </div>
       </div>
+
+      {ecg.verdicts?.length > 0 && (
+        <div className="card2 p-4 flex flex-col gap-3">
+          <p className="text-xs font-medium" style={{ color: 'var(--c-muted)' }}>
+            Philips machine verdict (interpretation_comment_2), % with 95% CI
+          </p>
+          {ecg.verdicts.map(v => (
+            <MiniBar
+              key={v.verdict}
+              label={v.label}
+              pct={v.pct}
+              color={VERDICT_COLORS[v.verdict] ?? '#888'}
+              sublabel={`n = ${v.k} of ${v.n} · 95% CI ${v.ci95[0]}–${v.ci95[1]}`}
+            />
+          ))}
+        </div>
+      )}
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         <div className="card2 p-4">
@@ -184,10 +216,30 @@ function ECGQualityPanel({ ecg }) {
 
 // ── Main Export ───────────────────────────────────────────────────────────────
 
+function SourceBadge({ data }) {
+  const full = data.source === 'precomputed_full_cohort'
+  return (
+    <div className="flex items-center gap-2 text-xs">
+      <span
+        className="px-2 py-1 rounded font-medium"
+        style={{ background: full ? 'rgba(29,158,117,0.12)' : 'rgba(186,117,23,0.12)', color: full ? '#1D9E75' : '#BA7517' }}
+      >
+        {full ? 'Full cohort' : 'Stratified random sample'}
+      </span>
+      {full && data._meta?.generated_at && (
+        <span style={{ color: 'var(--c-muted)' }}>
+          computed {data._meta.generated_at.slice(0, 10)}{data._meta.synthetic ? ' · SYNTHETIC test data' : ''}
+        </span>
+      )}
+    </div>
+  )
+}
+
 export default function SignalQualityPanel({ data }) {
   if (!data) return null
   return (
     <div className="flex flex-col gap-8">
+      <SourceBadge data={data} />
       <div>
         <h3 className="section-title mb-4">CGM signal quality (Dexcom G6)</h3>
         <CGMQualityPanel cgm={data.cgm} />

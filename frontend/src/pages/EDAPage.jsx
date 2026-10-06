@@ -10,6 +10,7 @@ import TemporalOverlapChart from '../components/TemporalOverlapChart'
 import ComissingnessMatrix from '../components/ComissingnessMatrix'
 import SignalQualityPanel from '../components/SignalQualityPanel'
 import { CohortLabsPanel } from '../components/LabsPanel'
+import { CohortOffsetsPanel, ReadinessFunnelPanel } from '../components/ReadinessPanels'
 
 // ── Tab definitions ───────────────────────────────────────────────────────────
 
@@ -37,6 +38,8 @@ function TemporalTab() {
   const { data: cohortData, loading: loadingCohort, error: errCohort } =
     useApi(api.getTemporalOverlapCohort, [])
 
+  const { data: offsetsData, error: errOffsets } = useApi(api.getTemporalOffsets, [])
+
   const { data: participantData, loading: loadingPt, error: errPt } =
     useApi(
       () => api.getTemporalOverlapParticipant(searchId),
@@ -54,11 +57,12 @@ function TemporalTab() {
       >
         <Info size={16} style={{ color: 'var(--c-accent2)', flexShrink: 0, marginTop: 2 }} />
         <div style={{ color: 'var(--c-muted)' }}>
-          <strong style={{ color: 'var(--c-text)' }}>Key finding: </strong>
-          CGM monitoring is initiated at the clinical visit date and runs for approximately 10 days.
-          ECG is a single 10-second recording taken at the same visit. All three streams share a
-          common temporal anchor: the <code style={{ color: 'var(--c-accent2)' }}>visit_start_date</code> in{' '}
-          <code style={{ color: 'var(--c-accent2)' }}>visit_occurrence.csv</code>.
+          <strong style={{ color: 'var(--c-text)' }}>How alignment is checked: </strong>
+          every stream is anchored to the earliest <code style={{ color: 'var(--c-accent2)' }}>visit_start_date</code> in{' '}
+          <code style={{ color: 'var(--c-accent2)' }}>visit_occurrence.csv</code>. The CGM window comes from its first and
+          last timestamps; the ECG date is the <code style={{ color: 'var(--c-accent2)' }}>validation_date</code> header
+          comment, the only date the WFDB header carries. Whether that date is the acquisition date is measured
+          cohort-wide below, not assumed. Comparisons are at calendar-date granularity.
         </div>
       </div>
 
@@ -68,6 +72,15 @@ function TemporalTab() {
         {loadingCohort && <SkeletonChartCard height="h-36" />}
         {errCohort    && <ErrorState message={errCohort} />}
         {cohortData   && <TemporalOverlapChart cohortData={cohortData} mode="cohort" />}
+      </div>
+
+      {/* Cohort-wide offsets */}
+      <div className="card p-5">
+        <h3 className="section-title mb-1">Cohort-wide temporal co-registration</h3>
+        <p className="text-xs mb-4" style={{ color: 'var(--c-muted)' }}>
+          How far each participant's ECG date and CGM start fall from the clinical visit, for the whole cohort.
+        </p>
+        <CohortOffsetsPanel data={offsetsData} error={errOffsets} />
       </div>
 
       {/* Per-participant timeline */}
@@ -124,6 +137,7 @@ function MissingnessTab() {
     [studyGroup]
   )
   const { data, loading, error } = useApi(fetchFn, [studyGroup])
+  const { data: funnel, error: errFunnel } = useApi(api.getReadinessFunnel, [])
 
   return (
     <div className="flex flex-col gap-5">
@@ -158,6 +172,14 @@ function MissingnessTab() {
       {error   && <ErrorState message={error} />}
       {loading && <SkeletonChartCard height="h-96" />}
       {data    && <ComissingnessMatrix data={data} />}
+
+      <div className="card p-5">
+        <h3 className="section-title mb-1">Readiness gates: coverage → integrity → temporal</h3>
+        <p className="text-xs mb-4" style={{ color: 'var(--c-muted)' }}>
+          Participants that survive each gate, and whether gating removes some study groups more than others.
+        </p>
+        <ReadinessFunnelPanel data={funnel} error={errFunnel} />
+      </div>
     </div>
   )
 }
@@ -176,10 +198,12 @@ function QualityTab() {
         <Info size={16} style={{ color: '#EF9F27', flexShrink: 0, marginTop: 2 }} />
         <div style={{ color: 'var(--c-muted)' }}>
           <strong style={{ color: 'var(--c-text)' }}>Note: </strong>
-          Signal quality is sampled across up to 200 participants per modality. CGM dropout is
-          computed as (expected − actual readings) / expected, where expected = days × 288.
-          ECG quality flags are sourced from the Philips PageWriter automated interpretation
-          embedded in each recording's <code style={{ color: '#EF9F27' }}>.hea</code> comment fields.
+          {data?.source === 'precomputed_full_cohort'
+            ? 'Statistics cover every participant with a parsed file (offline pipeline), with 95% Wilson confidence intervals. '
+            : 'Full-cohort results are not computed yet, so this view shows a seeded random sample stratified by study group (200 CGM, 150 ECG). Run scripts/full_cohort_quality.py for full-cohort statistics. '}
+          CGM dropout is (expected − actual readings) / expected, with expected = days × 288 over the observed
+          wear span. The ECG verdict is the Philips PageWriter TC30 machine interpretation
+          (<code style={{ color: '#EF9F27' }}>interpretation_comment_2</code>) in each <code style={{ color: '#EF9F27' }}>.hea</code> header.
         </div>
       </div>
 

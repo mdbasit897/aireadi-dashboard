@@ -38,7 +38,9 @@ export const api = {
     return apiFetch(`/api/eda/comissingness${qs}`)
   },
 
-  getSignalQuality:          () => apiFetch('/api/eda/signal-quality'),
+  getSignalQuality:          (source = 'auto') => apiFetch(`/api/eda/signal-quality?source=${source}`),
+  getTemporalOffsets:        () => apiFetch('/api/eda/temporal-offsets'),
+  getReadinessFunnel:        () => apiFetch('/api/eda/readiness-funnel'),
   getCohortLabDistributions: () => apiFetch('/api/eda/labs/cohort'),
   getParticipantLabs:        (id) => apiFetch(`/api/eda/labs/${id}`),
   getECGMetadata:            (id) => apiFetch(`/api/eda/ecg-metadata/${id}`),

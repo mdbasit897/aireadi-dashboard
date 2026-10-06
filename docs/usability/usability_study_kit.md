@@ -1,4 +1,10 @@
-# Small-scale usability study kit (feasible before 31 July 2026)
+# Small-scale usability study kit
+
+**Data sheet:** copy `docs/usability/usability_results_template.csv` (one row per
+participant), keep it outside git, and score it with
+`python scripts/score_usability.py <sheet.csv>`; then
+`python scripts/make_paper_assets.py` writes `results/paper/tab_usability.tex`.
+Participants reach the VM dashboard through an SSH tunnel (see `docs/VM_RUN_GUIDE.md`, step 6).
 
 A lightweight, honest formative study you can run in 2–3 days. Even n≈6–10 is a
 recognized methodology (Nielsen) and directly answers R4's "usability studies /
@@ -27,8 +33,8 @@ Give each participant these, in order, with no coding allowed:
    concurrent ECG + CGM + clinical files?"
 3. **Temporal co-registration** — "For participant 1023, are the CGM window and
    the ECG recording on the same calendar day as the clinical visit?"
-4. **Signal-quality gating** — "What fraction of the CGM sample has <10% dropout,
-   and what is the ECG abnormal-verdict rate?"
+4. **Signal-quality gating** — "What fraction of participants has <10% CGM dropout,
+   and what is the ECG abnormal-verdict rate (with its confidence interval)?"
 5. **Label validation** — "Do HbA1c medians increase monotonically across the
    four study groups?"
 
