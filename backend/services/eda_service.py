@@ -321,6 +321,7 @@ def extract_participant_readiness(person_id: str, row: pd.Series | dict | None =
     if cgm:
         rec.update({
             "cgm_start":           cgm["cgm_start"],
+            "cgm_start_utc_hour":  cgm["cgm_start_utc_hour"],
             "cgm_end":             cgm["cgm_end"],
             "cgm_days":            cgm["days_covered"],
             "cgm_n_readings":      cgm["n_readings"],

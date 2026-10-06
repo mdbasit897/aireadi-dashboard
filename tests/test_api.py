@@ -65,3 +65,12 @@ def test_participant_timeline_reports_offsets(client):
     if t["cgm_start"] and t["visit_date"]:
         assert isinstance(t["cgm_offset_days"], int)
         assert t["cgm_co_registered"] == (abs(t["cgm_offset_days"]) <= 7)
+
+
+def test_blank_unit_is_not_treated_as_unknown():
+    # pandas NaN in unit_source_value reached the check as the string "nan"
+    from services.omop_service import _normalize_unit_value
+
+    assert _normalize_unit_value(6.1, "nan", 3004410) == (6.1, False)
+    assert _normalize_unit_value(6.1, "", 3004410) == (6.1, False)
+    assert _normalize_unit_value(6.1, "furlongs", 3004410) == (None, False)

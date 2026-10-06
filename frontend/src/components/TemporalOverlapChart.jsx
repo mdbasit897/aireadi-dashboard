@@ -122,14 +122,14 @@ function TimelineStrip({ data }) {
                   background: ecg_has_abnormal ? '#E24B4A' : '#1D9E75',
                   border: '2px solid #fff',
                 }}
-                title={`ECG: ${ecg_recording_date}`}
+                title={`ECG header validation_date: ${ecg_recording_date} (identical for every record in AI-READI v3.0.0; not the acquisition date)`}
               />
               <div
                 className="w-px"
                 style={{ height: 16, background: 'rgba(29,158,117,0.5)' }}
               />
               <span className="text-xs whitespace-nowrap" style={{ color: '#5DCAA5' }}>
-                ECG
+                ECG hdr date
               </span>
             </div>
           )}

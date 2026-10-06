@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import math
 import random
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from typing import Any, Iterable
 
 import pandas as pd
@@ -160,6 +160,7 @@ def summarise_cgm(stamps: list[datetime], values: list[float]) -> dict[str, Any]
     out: dict[str, Any] = {
         "cgm_start":           t0.date().isoformat(),   # calendar date, UTC
         "cgm_end":             t1.date().isoformat(),   # calendar date, UTC
+        "cgm_start_utc_hour":  t0.astimezone(timezone.utc).hour if t0.tzinfo else t0.hour,
         "days_covered":        round(days, 1),
         "n_readings":          n,
         "dropout_pct":         round(max(0.0, (expected - n) / expected) * 100, 1),

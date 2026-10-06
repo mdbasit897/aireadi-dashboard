@@ -5,7 +5,7 @@ from services import (
     get_participant_list,
     get_participant_detail,
     get_cgm_data,
-    get_ecg_metadata,
+    get_ecg_data,
     get_wearable_summary,
     get_clinical_summary,
 )
@@ -61,7 +61,7 @@ def patient_ecg(person_id: str):
         raise HTTPException(status_code=404, detail=f"Participant {person_id} not found")
     if not detail["modalities"].get("cardiac_ecg"):
         raise HTTPException(status_code=404, detail="No ECG data for this participant")
-    data = get_ecg_metadata(person_id)
+    data = get_ecg_data(person_id)
     if not data:
         raise HTTPException(status_code=404, detail="ECG files not found on disk")
     return data

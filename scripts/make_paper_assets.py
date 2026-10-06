@@ -65,7 +65,11 @@ class Assets:
 
 
 def ci(c) -> str:
-    return f"[{c[0]}, {c[1]}]" if c and c[0] is not None else ""
+    """[lo, hi]; scores in [0, 1] (AUROC, MAE) to 3 decimals, percentages to 1."""
+    if not c or c[0] is None:
+        return ""
+    nd = 3 if all(abs(v) <= 1 for v in c) else 1
+    return f"[{c[0]:.{nd}f}, {c[1]:.{nd}f}]"
 
 
 def fmt(x, nd=1) -> str:

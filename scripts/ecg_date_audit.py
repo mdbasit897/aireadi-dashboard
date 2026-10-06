@@ -183,7 +183,7 @@ def main() -> None:
         "date_extracted":         proportion(len(parsed), len(readable)),
         "failure_modes":          {k: int(v) for k, v in failures.items() if k != "ok"},
         "n_participants_multiple_records": int((df["ecg_n_records"].fillna(0) > 1).sum()),
-        "base_date_populated":    proportion(int(readable["ecg_base_date_set"].fillna(False).astype(bool).sum()),
+        "base_date_populated":    proportion(int((readable["ecg_base_date_set"] == True).sum()),  # noqa: E712
                                              len(readable)),
         "parsing_rules": [
             "Split each '#' comment line at the first ':' into key and value; strip whitespace.",
@@ -243,6 +243,27 @@ def main() -> None:
     offsets["ecg_and_cgm_within_tau_of_visit"] = proportion(int(co_reg.sum()), int(both.sum()))
     offsets["tau_days"] = args.tau
 
+    # C4. CGM "+1 day" starts: UTC date rollover? CGM timestamps are UTC while the
+    # visit date is local. A sensor started in the local evening at a US site
+    # carries the next UTC date. If the +1-day starts are rollover, their UTC
+    # start hour falls before the site's UTC offset (Pacific UTC-7/-8, Central UTC-5/-6).
+    utc_offset_hours = {"UW": 8, "UCSD": 8, "UAB": 6}   # upper bound incl. standard time
+    rollover = {}
+    if "cgm_start_utc_hour" in df.columns:
+        for site, g in df.groupby("clinical_site"):
+            plus1 = g[g["cgm_offset_days"] == 1]
+            same = g[g["cgm_offset_days"] == 0]
+            cut = utc_offset_hours.get(site, 8)
+            rollover[site] = {
+                "n_same_day": int(len(same)),
+                "n_plus_one_day": int(len(plus1)),
+                "utc_hour_cutoff": cut,
+                "plus_one_started_before_cutoff_utc": proportion(int((plus1["cgm_start_utc_hour"] < cut).sum()), len(plus1)),
+                "plus_one_utc_hour_hist": {int(h): int(k) for h, k in plus1["cgm_start_utc_hour"].value_counts().sort_index().items()},
+                "same_day_utc_hour_hist": {int(h): int(k) for h, k in same["cgm_start_utc_hour"].value_counts().sort_index().items()},
+            }
+    offsets["cgm_plus_one_day_utc_rollover"] = rollover
+
     interpretation = interpret_validation_date(
         offsets["ecg_minus_visit"]["overall"], date_distribution["n_distinct"],
         date_distribution["n_dates"], args.tau)
@@ -283,6 +304,10 @@ def main() -> None:
     for b in ev["bins"]:
         print(f"   {b['bin']:>9}: {b['k']:>5}  ({b['pct']}%)")
     print(f"ECG and CGM both within ±{args.tau} d of visit: {offsets['ecg_and_cgm_within_tau_of_visit']['pct']}%")
+    for site, r in rollover.items():
+        p = r["plus_one_started_before_cutoff_utc"]
+        print(f"CGM +1 day at {site:<4}: {r['n_plus_one_day']:>3} participants; "
+              f"{p['pct']}% started before {r['utc_hour_cutoff']:02d}:00 UTC (local evening → UTC rollover)")
     print(f"Heuristic reading of validation_date: {interpretation['verdict']}  "
           f"({interpretation['fraction_within_tau_of_visit']*100:.1f}% within ±{args.tau} d)")
     date_keys = [f["key"] for f in inventory["fields"] if f["date_like"]]
