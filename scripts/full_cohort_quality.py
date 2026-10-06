@@ -41,6 +41,16 @@ def two_proportion_p(k1: int, n1: int, k2: int, n2: int) -> float | None:
     return round(2 * (1 - 0.5 * (1 + math.erf(abs(z) / math.sqrt(2)))), 4)
 
 
+def holm(p_values: dict[str, float | None]) -> dict[str, float]:
+    """Holm step-down adjustment for one family of tests."""
+    items = sorted(((k, p) for k, p in p_values.items() if p is not None), key=lambda kv: kv[1])
+    m, running, out = len(items), 0.0, {}
+    for i, (k, p) in enumerate(items):
+        running = max(running, min(1.0, (m - i) * p))
+        out[k] = round(running, 4)
+    return out
+
+
 def records(df):
     cgm = df[df["cgm_dropout_pct"].notna()][["cgm_dropout_pct", "cgm_dropout_nominal_pct", "cgm_days"]]
     cgm_records = [
@@ -122,37 +132,51 @@ def main() -> None:
     rand = summarise(stratified_sample(cgm_pool, HEAD_SLICE_CGM, "study_group", 42), "random")["cgm"], \
         summarise(stratified_sample(ecg_pool, HEAD_SLICE_ECG, "study_group", 42), "random")["ecg"]
 
-    def cmp_prop(metric_head: dict, metric_full: dict, k_key: str, verdict: str | None = None):
-        if verdict:
-            h = next((v for v in metric_head["verdicts"] if v["verdict"] == verdict), None)
-            f = next((v for v in metric_full["verdicts"] if v["verdict"] == verdict), None)
-            if not h or not f:
-                return None
-            return {"head_slice": h["pct"], "head_slice_ci95": h["ci95"], "full": f["pct"], "full_ci95": f["ci95"],
-                    "p_value": two_proportion_p(h["k"], h["n"], f["k"], f["n"])}
-        hn, fn = metric_head["n_sampled"], metric_full["n_sampled"]
-        hk = round(metric_head[k_key] / 100 * hn)
-        fk = round(metric_full[k_key] / 100 * fn)
-        return {"head_slice": metric_head[k_key], "head_slice_ci95": metric_head[f"{k_key}_ci95"],
-                "full": metric_full[k_key], "full_ci95": metric_full[f"{k_key}_ci95"],
-                "p_value": two_proportion_p(hk, hn, fk, fn)}
+    # The head-slice is part of the full cohort, so it is compared with the
+    # REMAINING participants (independent samples). The four ECG verdict tests
+    # are Holm-adjusted as one family.
+    cgm_head_rows, ecg_head_rows = cgm_pool.head(HEAD_SLICE_CGM), ecg_pool.head(HEAD_SLICE_ECG)
+    rest = summarise(cgm_pool.drop(cgm_head_rows.index), "remainder")["cgm"], \
+        summarise(ecg_pool.drop(ecg_head_rows.index), "remainder")["ecg"]
+
+    def verdict_of(summary: dict, verdict: str) -> dict | None:
+        return next((v for v in summary["verdicts"] if v["verdict"] == verdict), None)
 
     comparison = {}
-    if head[0] and full["cgm"]:
+    if head[0] and rest[0]:
+        hn, rn = head[0]["n_sampled"], rest[0]["n_sampled"]
+        hk = round(head[0]["pct_under_threshold"] / 100 * hn)
+        rk = round(rest[0]["pct_under_threshold"] / 100 * rn)
+        comparison["cgm_pct_under_threshold"] = {
+            "head_slice": head[0]["pct_under_threshold"], "head_slice_ci95": head[0]["pct_under_threshold_ci95"],
+            "remainder": rest[0]["pct_under_threshold"], "remainder_ci95": rest[0]["pct_under_threshold_ci95"],
+            "full": full["cgm"]["pct_under_threshold"], "p_value": two_proportion_p(hk, hn, rk, rn)}
         comparison["cgm_mean_dropout_pct"] = {"head_slice": head[0]["mean_dropout_pct"],
+                                              "remainder": rest[0]["mean_dropout_pct"],
                                               "random_sample": rand[0]["mean_dropout_pct"] if rand[0] else None,
                                               "full": full["cgm"]["mean_dropout_pct"]}
-        comparison["cgm_pct_under_threshold"] = cmp_prop(head[0], full["cgm"], "pct_under_threshold")
-    if head[1] and full["ecg"]:
+    if head[1] and rest[1]:
+        family = {}
         for v in ("normal", "otherwise_normal", "borderline", "abnormal"):
-            comparison[f"ecg_pct_{v}"] = cmp_prop(head[1], full["ecg"], "", verdict=v)
-        comparison["ecg_mean_qtc"] = {"head_slice": head[1]["mean_qtc"],
+            h, r, f = verdict_of(head[1], v), verdict_of(rest[1], v), verdict_of(full["ecg"], v)
+            if not (h and r and f):
+                continue
+            comparison[f"ecg_pct_{v}"] = {
+                "head_slice": h["pct"], "head_slice_ci95": h["ci95"],
+                "remainder": r["pct"], "remainder_ci95": r["ci95"],
+                "full": f["pct"], "full_ci95": f["ci95"],
+                "p_value": two_proportion_p(h["k"], h["n"], r["k"], r["n"])}
+            family[f"ecg_pct_{v}"] = comparison[f"ecg_pct_{v}"]["p_value"]
+        for key, p_adj in holm(family).items():
+            comparison[key]["p_holm"] = p_adj
+        comparison["ecg_mean_qtc"] = {"head_slice": head[1]["mean_qtc"], "remainder": rest[1]["mean_qtc"],
                                       "random_sample": rand[1]["mean_qtc"] if rand[1] else None,
                                       "full": full["ecg"]["mean_qtc"]}
     head_composition = {
-        "cgm_head_slice_by_site": {k: int(v) for k, v in cgm_pool.head(HEAD_SLICE_CGM)["clinical_site"].value_counts().items()},
+        "cgm_head_slice_by_site": {k: int(v) for k, v in cgm_head_rows["clinical_site"].value_counts().items()},
+        "ecg_head_slice_by_site": {k: int(v) for k, v in ecg_head_rows["clinical_site"].value_counts().items()},
         "cgm_full_by_site":       {k: int(v) for k, v in cgm_pool["clinical_site"].value_counts().items()},
-        "cgm_head_slice_by_group": {k: int(v) for k, v in cgm_pool.head(HEAD_SLICE_CGM)["study_group"].value_counts().items()},
+        "cgm_head_slice_by_group": {k: int(v) for k, v in cgm_head_rows["study_group"].value_counts().items()},
         "cgm_full_by_group":       {k: int(v) for k, v in cgm_pool["study_group"].value_counts().items()},
     }
 
@@ -167,6 +191,11 @@ def main() -> None:
         ecg_temporal_reason = f"set explicitly: {args.ecg_temporal}"
     gates = apply_gates(df, tau_days=args.tau, max_dropout_pct=args.max_dropout, ecg_temporal=ecg_temporal)
     gates_alt = apply_gates(df, tau_days=args.tau, max_dropout_pct=args.max_dropout, ecg_temporal=not ecg_temporal)
+    tau_sensitivity = [
+        {"tau_days": t, "n_g3": int(apply_gates(df, tau_days=t, max_dropout_pct=args.max_dropout,
+                                                 ecg_temporal=ecg_temporal)["G3"].sum())}
+        for t in (0, 1, 3, 7, 14)
+    ]
 
     payload = {
         "summary":               full,
@@ -175,10 +204,12 @@ def main() -> None:
         "by_site_group":         by_site_group,
         "head_slice_comparison": {"metrics": comparison, "composition": head_composition,
                                   "note": "head-slice = first 200 CGM / 150 ECG participants in participants.tsv order "
-                                          "(the R1 manuscript's sample); random = seeded study-group-stratified sample "
-                                          "of the same size; p = two-proportion z-test, head-slice vs full"},
+                                          "(the R1 manuscript's sample); remainder = all other participants; "
+                                          "p = two-proportion z-test, head-slice vs remainder (independent samples); "
+                                          "p_holm = Holm-adjusted across the four ECG verdicts"},
         "funnel":                gate_funnel(df, gates),
         "funnel_alternative_ecg_policy": {"ecg_temporal": not ecg_temporal, "funnel": gate_funnel(df, gates_alt)},
+        "tau_sensitivity":       tau_sensitivity,
         "gate_params":           {"tau_days": args.tau, "max_cgm_dropout_pct": args.max_dropout,
                                   "ecg_temporal": ecg_temporal, "ecg_temporal_reason": ecg_temporal_reason},
         "_meta":                 provenance("full_cohort_quality.py", tau=args.tau, max_dropout=args.max_dropout,
@@ -193,12 +224,13 @@ def main() -> None:
     if e:
         print(f"ECG  n={e['n_sampled']}  " + "  ".join(
             f"{v['verdict']} {v['pct']}% {v['ci95']}" for v in e["verdicts"]))
-    print("\nHead-slice vs full cohort:")
+    print("\nHead-slice vs remaining participants:")
     for k, v in comparison.items():
         print(f"   {k:<28} {v}")
     print(f"\nReadiness funnel (ECG temporal gate: {ecg_temporal}; {ecg_temporal_reason}):")
     for row in payload["funnel"]:
         print(f"   {row['gate']}  {row['n']:>5}  ({row['pct_of_G0']}%)  {row['label']}")
+    print("\nG3 by tolerance: " + ", ".join(f"tau={r['tau_days']}: {r['n_g3']}" for r in tau_sensitivity))
     print("\nWrote results/quality_full.json — the dashboard now serves full-cohort numbers.")
 
 

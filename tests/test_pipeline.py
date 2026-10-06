@@ -46,6 +46,13 @@ def test_evidence_pipeline_end_to_end(synthetic_env, run_script, client):
     assert [r["gate"] for r in quality["funnel"]] == ["G0", "G1", "G2", "G3"]
     ns = [r["n"] for r in quality["funnel"]]
     assert ns == sorted(ns, reverse=True)
+    # First-N is compared with the remaining participants, Holm-adjusted
+    cmp_ = quality["head_slice_comparison"]["metrics"]
+    for v in ("normal", "otherwise_normal", "borderline", "abnormal"):
+        assert "remainder" in cmp_[f"ecg_pct_{v}"]
+        assert cmp_[f"ecg_pct_{v}"]["p_holm"] >= cmp_[f"ecg_pct_{v}"]["p_value"]
+    taus = [r["n_g3"] for r in quality["tau_sensitivity"]]
+    assert len(taus) == 5 and taus == sorted(taus)  # G3 grows with tolerance
 
     run_script("gating_experiment.py", "--bootstrap", "50", "--rand-repeats", "3")
     gating = _load(results, "gating_results.json")

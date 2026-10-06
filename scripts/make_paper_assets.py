@@ -97,10 +97,11 @@ def quality(a: Assets) -> None:
     if c:
         thr = c["dropout_threshold_pct"]
         m = cmp_.get("cgm_pct_under_threshold") or {}
-        rows.append(f"CGM dropout $<${thr:g}\\,\\% & {fmt(m.get('head_slice'))} & "
-                    f"{fmt(c['pct_under_threshold'])} {ci(c['pct_under_threshold_ci95'])} & {fmt(m.get('p_value'), 3)} \\\\")
-        rows.append(f"CGM mean dropout (\\%) & {fmt(cmp_.get('cgm_mean_dropout_pct', {}).get('head_slice'))} & "
-                    f"{fmt(c['mean_dropout_pct'])} & -- \\\\")
+        md = cmp_.get("cgm_mean_dropout_pct") or {}
+        rows.append(f"CGM dropout $<${thr:g}\\,\\% & {fmt(m.get('head_slice'))} & {fmt(m.get('remainder'))} "
+                    f"{ci(m.get('remainder_ci95'))} & {fmt(c['pct_under_threshold'])} & {fmt(m.get('p_value'), 3)} & -- \\\\")
+        rows.append(f"CGM mean dropout & {fmt(md.get('head_slice'))} & {fmt(md.get('remainder'))} & "
+                    f"{fmt(c['mean_dropout_pct'])} & -- & -- \\\\")
         a.note("CGM participants analysed (full cohort)", c["n_sampled"], "quality_full.json: summary.cgm.n_sampled")
         a.note(f"CGM % with dropout < {thr:g}%", f"{c['pct_under_threshold']} {ci(c['pct_under_threshold_ci95'])}",
                "quality_full.json: summary.cgm.pct_under_threshold")
@@ -112,23 +113,34 @@ def quality(a: Assets) -> None:
             full = next((x for x in e["verdicts"] if x["verdict"] == v), None)
             m = cmp_.get(f"ecg_pct_{v}") or {}
             if full:
-                rows.append(f"ECG verdict: {VERDICT_SHORT[v]} & {fmt(m.get('head_slice'))} & "
-                            f"{fmt(full['pct'])} {ci(full['ci95'])} & {fmt(m.get('p_value'), 3)} \\\\")
+                rows.append(f"ECG: {VERDICT_SHORT[v]} & {fmt(m.get('head_slice'))} & {fmt(m.get('remainder'))} "
+                            f"{ci(m.get('remainder_ci95'))} & {fmt(full['pct'])} & {fmt(m.get('p_value'), 3)} & "
+                            f"{fmt(m.get('p_holm'), 3)} \\\\")
                 a.note(f"ECG % {VERDICT_SHORT[v]} (full cohort)", f"{full['pct']} {ci(full['ci95'])}",
                        f"quality_full.json: summary.ecg.verdicts[{v}]")
+                if m:
+                    a.note(f"First-N vs remaining, ECG {VERDICT_SHORT[v]}",
+                           f"{m.get('head_slice')} vs {m.get('remainder')}; p={m.get('p_value')}, Holm p={m.get('p_holm')}",
+                           f"quality_full.json: head_slice_comparison.metrics.ecg_pct_{v}")
         a.note("ECG participants analysed (full cohort)", e["n_sampled"], "quality_full.json: summary.ecg.n_sampled")
         a.note("Mean QTc (ms)", e["mean_qtc"], "quality_full.json: summary.ecg.mean_qtc")
+    comp = q["head_slice_comparison"].get("composition", {})
+    a.note("First-N site composition (CGM / ECG)",
+           f"{comp.get('cgm_head_slice_by_site')} / {comp.get('ecg_head_slice_by_site')}",
+           "quality_full.json: head_slice_comparison.composition")
+    for r in q.get("tau_sensitivity", []):
+        a.note(f"G3 participants at tau = {r['tau_days']} d", r["n_g3"], "quality_full.json: tau_sensitivity")
     n_c, n_e = (c or {}).get("n_sampled", "--"), (e or {}).get("n_sampled", "--")
     a.tex("tab_quality.tex", f"""\\begin{{table}}[t]
 \\centering
-\\caption{{Signal quality on the full cohort (CGM $n={n_c}$, ECG $n={n_e}$) versus the head-slice
-(first 200 CGM / 150 ECG participants) used previously. Brackets: 95\\% Wilson CI; $p$: two-proportion
-$z$-test, head-slice vs.\\ full cohort.}}
+\\caption{{Signal quality (\\%): the first 200 CGM / 150 ECG participants in file order (First-N) versus
+the remaining participants, and the full cohort (CGM $n={n_c}$, ECG $n={n_e}$). Brackets: 95\\% Wilson CI;
+$p$: two-proportion $z$-test, First-N vs.\\ remaining; $p_{{\\mathrm{{Holm}}}}$: Holm-adjusted across the four ECG verdicts.}}
 \\label{{tab:quality}}
 \\resizebox{{\\columnwidth}}{{!}}{{%
-\\begin{{tabular}}{{@{{}} l c c c @{{}}}}
+\\begin{{tabular}}{{@{{}} l c c c c c @{{}}}}
 \\hline
-\\textbf{{Metric (\\%)}} & \\textbf{{Head-slice}} & \\textbf{{Full cohort [95\\% CI]}} & \\textbf{{$p$}} \\\\
+\\textbf{{Metric}} & \\textbf{{First-N}} & \\textbf{{Remaining [95\\% CI]}} & \\textbf{{Full}} & \\textbf{{$p$}} & \\textbf{{$p_{{\\mathrm{{Holm}}}}$}} \\\\
 \\hline
 {chr(10).join(rows)}
 \\hline
@@ -220,8 +232,10 @@ clinical visit (calendar-date granularity). Brackets: 95\\% Wilson CI.}}
                color=color, edgecolor="black", linewidth=0.4, hatch=hatch)
     ax.set_xticks(range(len(labels)), labels)
     ax.set_ylabel("Participants (%)")
-    ax.set_xlabel("|offset|")
-    ax.legend(frameon=False, fontsize=6.5)
+    ax.set_xlabel("|offset| from the anchor")
+    ax.set_ylim(0, 100)
+    ax.legend(frameon=False, fontsize=6.5, ncol=3, loc="lower center", bbox_to_anchor=(0.5, 1.0),
+              handlelength=1.2, columnspacing=0.8)
     a.fig(fig, "fig_offsets.pdf")
     plt.close(fig)
 
@@ -313,11 +327,12 @@ MAE: HbA1c regression (\\%), gradient boosting.}}
                     capsize=2, markersize=3.5, linewidth=0.8, label={"logreg": "LR", "hgb": "GBM"}[kind])
         r = dx["g3_rand"][kind]
         if r["mean"] is not None and r["sd"] is not None:
-            ax.axhspan(r["mean"] - r["sd"], r["mean"] + r["sd"], xmin=0.78, xmax=0.98,
-                       color="0.85" if kind == "logreg" else "0.7", alpha=0.5, zorder=0)
+            ax.fill_between([2.6, 3.4], r["mean"] - r["sd"], r["mean"] + r["sd"],
+                            color="0.85" if kind == "logreg" else "0.7", alpha=0.6, zorder=0,
+                            label=f"G3-rand ±1 SD ({'LR' if kind == 'logreg' else 'GBM'})")
     ax.set_xticks(range(4), ["G0\nnone", "G1\ncoverage", "G2\n+integrity", "G3\n+temporal"])
     ax.set_ylabel("AUROC (clean test)")
-    ax.legend(frameon=False, fontsize=6.5, loc="lower left")
+    ax.legend(frameon=False, fontsize=6, ncol=2, loc="lower center", bbox_to_anchor=(0.5, 1.0))
     a.fig(fig, "fig_gating.pdf")
     plt.close(fig)
 
