@@ -170,6 +170,26 @@ def date_audit(a: Assets) -> None:
     a.note(f"ECG within ±{tau} d of visit", f"{ecg_w['pct']}% {ci(ecg_w['ci95'])}", "ecg_date_audit.json: offsets.ecg_minus_visit")
     a.note(f"CGM within ±{tau} d of visit", f"{cgm_w['pct']}% {ci(cgm_w['ci95'])}", "ecg_date_audit.json: offsets.cgm_minus_visit")
     a.note("validation_date heuristic reading", interp["verdict"], "ecg_date_audit.json: validation_date_interpretation")
+
+    # CGM +1-day starts explained by UTC date rollover (local-evening sensor starts)
+    roll = off.get("cgm_plus_one_day_utc_rollover") or {}
+    if roll:
+        same = sum(r["n_same_day"] for r in roll.values())
+        plus1 = sum(r["n_plus_one_day"] for r in roll.values())
+        rolled = sum(r["plus_one_started_before_cutoff_utc"]["k"] for r in roll.values())
+        n_cgm = nn("cgm_minus_visit")
+        local_same = proportion(same + rolled, n_cgm)
+        rows.insert(-1, f"CGM +1\\,d starts explained by UTC rollover & {rolled} of {plus1} \\\\")
+        rows.insert(-1, f"CGM start on visit day (local, rollover-corrected) & {fmt(local_same['pct'])}\\,\\% "
+                        f"{ci(local_same['ci95'])} \\\\")
+        a.note("CGM +1-day starts explained by UTC rollover", f"{rolled} of {plus1}",
+               "ecg_date_audit.json: offsets.cgm_plus_one_day_utc_rollover")
+        a.note("CGM start on visit day, local (rollover-corrected)", f"{local_same['pct']}% {ci(local_same['ci95'])}",
+               "ecg_date_audit.json: offsets.cgm_plus_one_day_utc_rollover + cgm_minus_visit")
+        for site, r in roll.items():
+            p = r["plus_one_started_before_cutoff_utc"]
+            a.note(f"CGM +1-day starts before {r['utc_hour_cutoff']:02d}:00 UTC at {site}", f"{p['k']} of {p['n']}",
+                   f"ecg_date_audit.json: offsets.cgm_plus_one_day_utc_rollover.{site}")
     if mv:
         a.note("Manual parser verification (both reviewers)", f"{mv['both_correct']['pct']}%, kappa {mv['cohens_kappa']}",
                "ecg_date_audit.json: manual_verification")
